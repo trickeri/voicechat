@@ -1,0 +1,20 @@
+[package]
+name = "voicechat"
+version = "0.1.0"
+edition = "2021"
+description = "Headless dictation daemon: mic -> whispervulkan -> clipboard + smart paste. No window."
+
+[[bin]]
+name = "voicechat"
+path = "src/main.rs"
+
+[dependencies]
+hound = "3.5"
+ureq = "2.10"
+signal-hook = "0.3"
+libc = "0.2"
+
+[profile.release]
+opt-level = 2
+lto = true
+strip = true

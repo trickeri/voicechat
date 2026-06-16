@@ -1,0 +1,16 @@
+[Unit]
+Description=voicechat — headless dictation daemon (mic -> whispervulkan -> paste)
+After=graphical-session.target whispervulkan.service
+Wants=whispervulkan.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/voicechat run
+Restart=on-failure
+RestartSec=2
+# Which mic to dictate from. Find names with `pactl list sources short`. Leave unset to
+# use the system default source (set that in KDE System Settings > Audio). Adjust to taste.
+Environment=VOICECHAT_SOURCE=alsa_input.usb-Focusrite_Scarlett_2i2_USB_Y8D8QZU93081A1-00.HiFi__Mic1__source
+
+[Install]
+WantedBy=default.target
