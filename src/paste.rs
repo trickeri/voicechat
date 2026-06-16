@@ -19,13 +19,6 @@ fn active_window_file() -> PathBuf {
     state::cache_dir().join("active-window")
 }
 
-/// True if the currently-focused window looks like ghostty (per the taskbar's hint file).
-fn focused_is_ghostty() -> bool {
-    std::fs::read_to_string(active_window_file())
-        .map(|s| s.to_lowercase().contains("ghostty"))
-        .unwrap_or(false)
-}
-
 fn ydotool_socket() -> String {
     std::env::var("YDOTOOL_SOCKET").unwrap_or_else(|_| {
         let run = std::env::var("XDG_RUNTIME_DIR").unwrap_or_else(|_| "/run/user/1000".into());
@@ -85,7 +78,19 @@ pub fn copy_and_paste(text: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    let ghostty = focused_is_ghostty();
+    // If no real app is focused (the plasma desktop), DON'T synthesize a paste — Ctrl+V on
+    // the desktop opens KDE's "Paste Clipboard Content" file dialog. Leave it on the
+    // clipboard so it can be pasted manually.
+    let focus = std::fs::read_to_string(active_window_file())
+        .unwrap_or_default()
+        .trim()
+        .to_lowercase();
+    if focus.is_empty() || focus.contains("plasmashell") {
+        eprintln!("voicechat: no app focused (desktop) — left on clipboard, not pasting");
+        return Ok(());
+    }
+
+    let ghostty = focus.contains("ghostty");
     // key down in order, then key up in reverse: 29:1 [42:1] 47:1 47:0 [42:0] 29:0
     let seq: Vec<String> = if ghostty {
         vec![
