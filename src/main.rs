@@ -121,6 +121,7 @@ fn run_daemon() {
 fn start_listening() -> Result<Session, String> {
     let cap = capture::start()?;
     state::write("listening", 0.0);
+    play_sound("VOICECHAT_SOUND_START");
 
     // Stream the mic level to the state file ~30 Hz for the taskbar's reactive bars.
     let running = Arc::new(AtomicBool::new(true));
@@ -141,6 +142,7 @@ fn start_listening() -> Result<Session, String> {
 }
 
 fn stop_and_process(mut s: Session) {
+    play_sound("VOICECHAT_SOUND_STOP");
     // Stop the level writer first so it can't overwrite the processing state.
     s.writer_running.store(false, Ordering::Relaxed);
     if let Some(h) = s.writer.take() {
@@ -175,6 +177,21 @@ fn stop_and_process(mut s: Session) {
         Err(e) => {
             eprintln!("voicechat: transcribe failed: {e}");
             flash_error();
+        }
+    }
+}
+
+/// Play a notification sound (non-blocking) if the given env var points at an audio file.
+/// e.g. VOICECHAT_SOUND_START / VOICECHAT_SOUND_STOP.
+fn play_sound(env_var: &str) {
+    if let Ok(path) = std::env::var(env_var) {
+        if !path.is_empty() && std::path::Path::new(&path).exists() {
+            if let Ok(child) = std::process::Command::new("pw-play").arg(&path).spawn() {
+                thread::spawn(move || {
+                    let mut c = child;
+                    let _ = c.wait();
+                });
+            }
         }
     }
 }
