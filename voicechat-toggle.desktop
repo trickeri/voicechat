@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Voice Dictation Toggle
+Exec=/home/trikeri/.local/bin/voicechat toggle
+Icon=audio-input-microphone
+NoDisplay=true
+X-KDE-Shortcuts=Meta+Esc

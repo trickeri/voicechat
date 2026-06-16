@@ -34,6 +34,25 @@ systemctl --user enable --now voicechat
 
 Requires: `whispervulkan` running, `parec` (pipewire-pulse), `wl-copy`, and `ydotool` (+ `ydotoold`).
 
+### Global shortcut (Meta+Esc)
+
+A plasmoid QML `Shortcut` only fires when plasmashell has focus, so the toggle must be a real
+kglobalaccel shortcut. `voicechat-toggle.desktop` (ship it to `~/.local/share/applications/`,
+edit the `Exec` path) carries `X-KDE-Shortcuts=Meta+Esc`, which KDE registers at login. To register
+live without re-logging in:
+
+```bash
+cp voicechat-toggle.desktop ~/.local/share/applications/   # edit Exec= to your path
+kbuildsycoca6
+AID="['voicechat-toggle.desktop','_launch','Voice Dictation Toggle','Voice Dictation Toggle']"
+gdbus call --session --dest org.kde.kglobalaccel --object-path /kglobalaccel \
+  --method org.kde.KGlobalAccel.doRegister "$AID"
+gdbus call --session --dest org.kde.kglobalaccel --object-path /kglobalaccel \
+  --method org.kde.KGlobalAccel.setForeignShortcut "$AID" "[285212672]"   # 285212672 = Meta+Esc
+```
+
+(If Meta+Esc was taken by System Monitor, rebind that to e.g. Meta+Alt+Delete first.)
+
 ## Config (env, set in the service)
 
 - `VOICECHAT_SOURCE` — PulseAudio/PipeWire source to record from (`pactl list sources short`).
