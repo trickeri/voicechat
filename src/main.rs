@@ -93,7 +93,7 @@ fn run_daemon() {
                         }
                         Err(e) => {
                             eprintln!("voicechat: capture failed: {e}");
-                            state::write("idle", 0.0);
+                            flash_error();
                         }
                     }
                 } else {
@@ -166,9 +166,22 @@ fn stop_and_process(mut s: Session) {
             }
             state::write("done", 0.0);
             thread::sleep(Duration::from_millis(250));
+            state::write("idle", 0.0);
         }
-        Ok(_) => eprintln!("voicechat: empty transcript"),
-        Err(e) => eprintln!("voicechat: transcribe failed: {e}"),
+        Ok(_) => {
+            eprintln!("voicechat: empty transcript");
+            flash_error();
+        }
+        Err(e) => {
+            eprintln!("voicechat: transcribe failed: {e}");
+            flash_error();
+        }
     }
+}
+
+/// Briefly show an error on the taskbar hex, then settle back to idle.
+fn flash_error() {
+    state::write("error", 0.0);
+    thread::sleep(Duration::from_millis(1100));
     state::write("idle", 0.0);
 }
