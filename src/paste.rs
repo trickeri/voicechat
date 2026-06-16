@@ -49,15 +49,35 @@ pub fn copy_and_paste(text: &str) -> Result<(), String> {
         return Ok(());
     }
     // Persistent wl-copy: it daemonizes and keeps serving the clipboard, so the paste
-    // below does NOT clear it; a later copy just overrides it.
-    Command::new("wl-copy")
+    // below does NOT clear it; a later copy just overrides it. Reap it when it's
+    // eventually displaced by a future copy (otherwise it lingers as a zombie).
+    let child = Command::new("wl-copy")
         .arg("--")
         .arg(text)
         .spawn()
         .map_err(|e| format!("wl-copy: {e}"))?;
+    thread::spawn(move || {
+        let mut child = child;
+        let _ = child.wait();
+    });
 
-    // Give wl-copy a moment to take ownership of the selection before pasting.
-    thread::sleep(Duration::from_millis(150));
+    // Wait until wl-copy has ACTUALLY taken ownership and the clipboard reports our text,
+    // before synthesizing the paste. Otherwise we race the previous owner (e.g. an image)
+    // and the app pastes the stale content instead. Poll up to ~1.5 s.
+    let want = text.trim();
+    let mut owned = false;
+    for _ in 0..50 {
+        thread::sleep(Duration::from_millis(30));
+        if let Ok(out) = Command::new("wl-paste").arg("--no-newline").output() {
+            if String::from_utf8_lossy(&out.stdout).trim() == want {
+                owned = true;
+                break;
+            }
+        }
+    }
+    if !owned {
+        eprintln!("voicechat: clipboard didn't settle to our text; pasting anyway");
+    }
 
     // Safety/testing escape hatch: copy only, don't synthesize keystrokes.
     if std::env::var("VOICECHAT_DRY_PASTE").is_ok() {
