@@ -89,7 +89,18 @@ daemon owns no UI itself, so none of that is required to use it.
    - **No** → set `Environment=VOICECHAT_ANYKEY_STOP=0` in the service (only the hotkey ends
      a recording).
 
-7. **Test:** run `voicechat toggle`, say a sentence, then press the hotkey (or, with any-key
+7. 🟢 **Ask: default paste shortcut?** — *"What key combo should paste the transcript? The
+   default is Ctrl+V, which works in most apps."* Default **Ctrl+V**.
+   - Set `Environment=VOICECHAT_PASTE_KEY=ctrl+v` (or the chosen combo) in the service. Combos
+     are written like `ctrl+v` / `ctrl+shift+v` / `shift+insert`.
+   - **Tell the user:** some apps need a *different* paste shortcut, so they may want their own
+     per-application rules. voicechat ships one built-in rule — terminals like **ghostty** use
+     `ctrl+shift+v`. Override or extend via `VOICECHAT_PASTE_RULES`, a `;`-separated list of
+     `app-substring=combo` (matched against the focused app id), e.g.
+     `VOICECHAT_PASTE_RULES=ghostty=ctrl+shift+v;kitty=ctrl+shift+v`. Per-app rules require the
+     focus hint (`VOICECHAT_ACTIVE_WINDOW_FILE`) to be populated by the user's setup.
+
+8. **Test:** run `voicechat toggle`, say a sentence, then press the hotkey (or, with any-key
    enabled, any key) — the text should paste into the focused window. `VOICECHAT_DRY_PASTE=1`
    copies to the clipboard without synthesizing the keystroke if you want to test without
    pasting.
@@ -134,6 +145,11 @@ On non-KDE desktops, just bind `voicechat toggle` to a key in your DE's keyboard
   Unset = system default source.
 - `WHISPER_HTTP_URL` — whispervulkan endpoint (default `http://127.0.0.1:48450/inference`).
 - `YDOTOOL_SOCKET` — default `$XDG_RUNTIME_DIR/.ydotool_socket`.
+- `VOICECHAT_PASTE_KEY` — default paste combo (default `ctrl+v`). Written like `ctrl+v` /
+  `ctrl+shift+v` / `shift+insert` (modifiers: ctrl, shift, alt, super; plus a–z or insert).
+- `VOICECHAT_PASTE_RULES` — per-app paste overrides, `;`-separated `app-substring=combo`
+  matched against the focused app id. Default `ghostty=ctrl+shift+v`. Needs the focus hint
+  (`VOICECHAT_ACTIVE_WINDOW_FILE`) to be populated.
 - `VOICECHAT_ANYKEY_STOP` — let any key (not just the hotkey) finish a recording. On by
   default; set `0`/`false`/`off` to require the hotkey. Needs read access to `/dev/input`
   (the `input` group); silently disables itself if unavailable.

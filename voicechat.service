@@ -12,6 +12,12 @@ RestartSec=2
 # mic, uncomment and set this to a source name from `pactl list sources short`.
 #Environment=VOICECHAT_SOURCE=alsa_input.example-source
 
+# Paste shortcut. Default is Ctrl+V (works in most apps). Per-app overrides go in
+# VOICECHAT_PASTE_RULES (app-substring=combo, ;-separated); the built-in default makes
+# ghostty-like terminals use Ctrl+Shift+V. Add your own per-app rules as needed.
+#Environment=VOICECHAT_PASTE_KEY=ctrl+v
+#Environment=VOICECHAT_PASTE_RULES=ghostty=ctrl+shift+v;kitty=ctrl+shift+v
+
 # Notification sounds (played via pw-play) — DISABLED by default. Placeholder start/stop
 # sounds ship in the repo's sounds/ directory; replace those files with your own audio (any
 # format pw-play supports), then uncomment to enable.

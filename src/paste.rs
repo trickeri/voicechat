@@ -1,7 +1,13 @@
 //! Clipboard + smart paste. Copies with PERSISTENT wl-copy (never `-o`/one-shot, which
 //! clears the selection after the first paste), optionally detects the focused app id
-//! from a user-provided active-window file, and pastes with ydotool: Ctrl+Shift+V in
-//! ghostty-like terminals, Ctrl+V everywhere else.
+//! from a user-provided active-window file, and synthesizes the paste shortcut with
+//! ydotool.
+//!
+//! The shortcut is configurable: `VOICECHAT_PASTE_KEY` is the default combo (default
+//! `ctrl+v`). `VOICECHAT_PASTE_RULES` is a `;`-separated list of `app-substring=combo`
+//! per-application overrides, matched (case-insensitively) against the focused app id;
+//! it defaults to `ghostty=ctrl+shift+v` (terminals paste with Ctrl+Shift+V). Combos are
+//! written like `ctrl+shift+v` / `shift+insert`.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -10,10 +16,61 @@ use std::time::Duration;
 
 use crate::state;
 
-// evdev keycodes for ydotool
-const KEY_LEFTCTRL: &str = "29";
-const KEY_LEFTSHIFT: &str = "42";
-const KEY_V: &str = "47";
+/// Map a key/modifier name to its evdev keycode (as a string, for ydotool). Covers the
+/// modifiers, a–z, and Insert — enough for paste shortcuts. Returns None for unknown names.
+fn keycode(name: &str) -> Option<&'static str> {
+    Some(match name.to_ascii_lowercase().as_str() {
+        "ctrl" | "control" | "leftctrl" => "29",
+        "shift" | "leftshift" => "42",
+        "alt" | "leftalt" => "56",
+        "super" | "meta" | "win" | "leftmeta" => "125",
+        "a" => "30", "b" => "48", "c" => "46", "d" => "32", "e" => "18",
+        "f" => "33", "g" => "34", "h" => "35", "i" => "23", "j" => "36",
+        "k" => "37", "l" => "38", "m" => "50", "n" => "49", "o" => "24",
+        "p" => "25", "q" => "16", "r" => "19", "s" => "31", "t" => "20",
+        "u" => "22", "v" => "47", "w" => "17", "x" => "45", "y" => "21",
+        "z" => "44",
+        "insert" | "ins" => "110",
+        _ => return None,
+    })
+}
+
+/// Turn a combo like `ctrl+shift+v` into a ydotool key sequence: modifiers down in order,
+/// then key down, key up, modifiers up in reverse. None if any token is unknown.
+fn build_seq(combo: &str) -> Option<Vec<String>> {
+    let parts: Vec<&str> = combo.split('+').map(str::trim).filter(|s| !s.is_empty()).collect();
+    let (key, mods) = parts.split_last()?;
+    let key_code = keycode(key)?;
+    let mod_codes: Option<Vec<&str>> = mods.iter().map(|m| keycode(m)).collect();
+    let mod_codes = mod_codes?;
+
+    let mut seq = Vec::with_capacity(mod_codes.len() * 2 + 2);
+    for c in &mod_codes {
+        seq.push(format!("{c}:1"));
+    }
+    seq.push(format!("{key_code}:1"));
+    seq.push(format!("{key_code}:0"));
+    for c in mod_codes.iter().rev() {
+        seq.push(format!("{c}:0"));
+    }
+    Some(seq)
+}
+
+/// The paste combo for the focused app: the first matching `VOICECHAT_PASTE_RULES` entry,
+/// else `VOICECHAT_PASTE_KEY`, else `ctrl+v`. `focus` is expected lowercased.
+fn paste_combo_for(focus: &str) -> String {
+    let rules = std::env::var("VOICECHAT_PASTE_RULES")
+        .unwrap_or_else(|_| "ghostty=ctrl+shift+v".to_string());
+    for rule in rules.split(';') {
+        if let Some((pat, combo)) = rule.split_once('=') {
+            let pat = pat.trim().to_lowercase();
+            if !pat.is_empty() && focus.contains(&pat) {
+                return combo.trim().to_string();
+            }
+        }
+    }
+    std::env::var("VOICECHAT_PASTE_KEY").unwrap_or_else(|_| "ctrl+v".to_string())
+}
 
 fn active_window_file() -> PathBuf {
     std::env::var("VOICECHAT_ACTIVE_WINDOW_FILE")
@@ -91,25 +148,11 @@ pub fn copy_and_paste(text: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    let ghostty = focus.contains("ghostty");
-    // key down in order, then key up in reverse: 29:1 [42:1] 47:1 47:0 [42:0] 29:0
-    let seq: Vec<String> = if ghostty {
-        vec![
-            format!("{KEY_LEFTCTRL}:1"),
-            format!("{KEY_LEFTSHIFT}:1"),
-            format!("{KEY_V}:1"),
-            format!("{KEY_V}:0"),
-            format!("{KEY_LEFTSHIFT}:0"),
-            format!("{KEY_LEFTCTRL}:0"),
-        ]
-    } else {
-        vec![
-            format!("{KEY_LEFTCTRL}:1"),
-            format!("{KEY_V}:1"),
-            format!("{KEY_V}:0"),
-            format!("{KEY_LEFTCTRL}:0"),
-        ]
-    };
+    let combo = paste_combo_for(&focus);
+    let seq = build_seq(&combo).unwrap_or_else(|| {
+        eprintln!("voicechat: unrecognized paste combo '{combo}', using ctrl+v");
+        build_seq("ctrl+v").unwrap()
+    });
     let refs: Vec<&str> = seq.iter().map(|s| s.as_str()).collect();
     ydotool_key(&refs)
 }
