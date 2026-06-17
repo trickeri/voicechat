@@ -8,6 +8,7 @@
 //! whispervulkan -> clipboard + smart paste -> idle.
 
 mod capture;
+mod keywatch;
 mod paste;
 mod state;
 mod stt;
@@ -17,7 +18,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use signal_hook::consts::{SIGINT, SIGTERM, SIGUSR1};
 
@@ -59,10 +60,21 @@ fn send_toggle() {
     }
 }
 
+/// What the daemon's main loop reacts to.
+enum Ev {
+    /// Push-to-talk hotkey (SIGUSR1): start if idle, stop+process if listening.
+    Toggle,
+    /// Any key was pressed while listening (the any-key-stop watcher): stop+process.
+    KeyFinish,
+    /// SIGTERM/SIGINT: shut down.
+    Shutdown,
+}
+
 struct Session {
     cap: capture::Capture,
     writer_running: Arc<AtomicBool>,
     writer: Option<thread::JoinHandle<()>>,
+    keywatch: Option<keywatch::KeyWatch>,
 }
 
 fn run_daemon() {
@@ -71,22 +83,31 @@ fn run_daemon() {
     state::write("idle", 0.0);
     eprintln!("voicechat: daemon up (pid {}), endpoint {}", std::process::id(), stt::endpoint());
 
-    let (tx, rx) = mpsc::channel::<i32>();
+    let (tx, rx) = mpsc::channel::<Ev>();
+    let sig_tx = tx.clone();
     let mut signals = signal_hook::iterator::Signals::new([SIGUSR1, SIGTERM, SIGINT])
         .expect("register signals");
     thread::spawn(move || {
         for sig in signals.forever() {
-            let _ = tx.send(sig);
+            let ev = if sig == SIGUSR1 { Ev::Toggle } else { Ev::Shutdown };
+            let _ = sig_tx.send(ev);
         }
     });
 
     let mut session: Option<Session> = None;
+    // The push-to-talk hotkey is seen by both the global shortcut (-> Toggle) and the
+    // any-key watcher (-> KeyFinish). When a KeyFinish stops a recording, swallow the
+    // Toggle echo that lands right after so it doesn't immediately start a new one.
+    let mut last_keystop: Option<Instant> = None;
+    const ECHO_GUARD: Duration = Duration::from_millis(600);
 
-    for sig in rx {
-        match sig {
-            SIGUSR1 => {
-                if session.is_none() {
-                    match start_listening() {
+    for ev in rx {
+        match ev {
+            Ev::Toggle => {
+                if let Some(s) = session.take() {
+                    stop_and_process(s); // normal hotkey stop — no guard set
+                } else if last_keystop.map_or(true, |t| t.elapsed() >= ECHO_GUARD) {
+                    match start_listening(tx.clone()) {
                         Ok(s) => {
                             session = Some(s);
                             eprintln!("voicechat: listening");
@@ -96,14 +117,20 @@ fn run_daemon() {
                             flash_error();
                         }
                     }
-                } else {
-                    let s = session.take().unwrap();
-                    stop_and_process(s);
                 }
             }
-            SIGTERM | SIGINT => {
-                eprintln!("voicechat: shutting down");
+            Ev::KeyFinish => {
                 if let Some(s) = session.take() {
+                    stop_and_process(s);
+                    last_keystop = Some(Instant::now());
+                }
+            }
+            Ev::Shutdown => {
+                eprintln!("voicechat: shutting down");
+                if let Some(mut s) = session.take() {
+                    if let Some(kw) = s.keywatch.take() {
+                        kw.stop();
+                    }
                     s.writer_running.store(false, Ordering::Relaxed);
                     if let Some(h) = s.writer {
                         let _ = h.join();
@@ -113,15 +140,14 @@ fn run_daemon() {
                 state::write("idle", 0.0);
                 break;
             }
-            _ => {}
         }
     }
 }
 
-fn start_listening() -> Result<Session, String> {
+fn start_listening(tx: mpsc::Sender<Ev>) -> Result<Session, String> {
     let cap = capture::start()?;
     state::write("listening", 0.0);
-    play_sound("VOICECHAT_SOUND_START", "PushToTalkStartSFX.mp3");
+    play_sound("VOICECHAT_SOUND_START");
 
     // Publish the mic level to the status file ~30 Hz for any external visualizer.
     let running = Arc::new(AtomicBool::new(true));
@@ -134,15 +160,29 @@ fn start_listening() -> Result<Session, String> {
         }
     });
 
+    // Any key (not just the hotkey) ends the recording, unless disabled.
+    let keywatch = if keywatch::enabled() {
+        keywatch::spawn(move || {
+            let _ = tx.send(Ev::KeyFinish);
+        })
+    } else {
+        None
+    };
+
     Ok(Session {
         cap,
         writer_running: running,
         writer: Some(writer),
+        keywatch,
     })
 }
 
 fn stop_and_process(mut s: Session) {
-    play_sound("VOICECHAT_SOUND_STOP", "PushToTalkStopSFX.mp3");
+    // Stop watching the keyboard first so stray keys during processing/paste are ignored.
+    if let Some(kw) = s.keywatch.take() {
+        kw.stop();
+    }
+    play_sound("VOICECHAT_SOUND_STOP");
     // Stop the level writer first so it can't overwrite the processing state.
     s.writer_running.store(false, Ordering::Relaxed);
     if let Some(h) = s.writer.take() {
@@ -181,25 +221,22 @@ fn stop_and_process(mut s: Session) {
     }
 }
 
-/// Play a notification sound (non-blocking).
-///
-/// The path comes from `env_var` (e.g. VOICECHAT_SOUND_START / VOICECHAT_SOUND_STOP)
-/// if set; otherwise it falls back to `default_name` under ~/Music.
-fn play_sound(env_var: &str, default_name: &str) {
-    let path = match std::env::var(env_var) {
-        Ok(p) if !p.is_empty() => std::path::PathBuf::from(p),
-        _ => match std::env::var_os("HOME") {
-            Some(home) => std::path::Path::new(&home).join("Music").join(default_name),
-            None => return,
-        },
+/// Play a notification sound (non-blocking) if `env_var` points at an existing audio file.
+/// Disabled unless the env var is set — voicechat.service / config.env.example carry
+/// commented lines that point at the placeholder sounds shipped in `sounds/`; users
+/// replace those files (or point elsewhere) and uncomment to enable.
+fn play_sound(env_var: &str) {
+    let Ok(path) = std::env::var(env_var) else {
+        return;
     };
-    if path.exists() {
-        if let Ok(child) = std::process::Command::new("pw-play").arg(&path).spawn() {
-            thread::spawn(move || {
-                let mut c = child;
-                let _ = c.wait();
-            });
-        }
+    if path.is_empty() || !std::path::Path::new(&path).exists() {
+        return;
+    }
+    if let Ok(child) = std::process::Command::new("pw-play").arg(&path).spawn() {
+        thread::spawn(move || {
+            let mut c = child;
+            let _ = c.wait();
+        });
     }
 }
 

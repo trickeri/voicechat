@@ -12,5 +12,11 @@ RestartSec=2
 # mic, uncomment and set this to a source name from `pactl list sources short`.
 #Environment=VOICECHAT_SOURCE=alsa_input.example-source
 
+# Notification sounds (played via pw-play) — DISABLED by default. Placeholder start/stop
+# sounds ship in the repo's sounds/ directory; replace those files with your own audio (any
+# format pw-play supports), then uncomment to enable.
+#Environment=VOICECHAT_SOUND_START=%h/programming/voicechat/sounds/PushToTalkStartSFX.mp3
+#Environment=VOICECHAT_SOUND_STOP=%h/programming/voicechat/sounds/PushToTalkStopSFX.mp3
+
 [Install]
 WantedBy=default.target

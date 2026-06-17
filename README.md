@@ -44,7 +44,10 @@ daemon owns no UI itself, so none of that is required to use it.
    - a Rust toolchain (`cargo`) to build
 
    Make sure `ydotoold` is running (it needs access to `/dev/uinput`); enable it as a user
-   service or per your distro's instructions.
+   service or per your distro's instructions. For **any-key-stop** (step 6) the user also
+   needs read access to `/dev/input` — i.e. membership in the `input` group
+   (`sudo usermod -aG input "$USER"`, then re-login). Without it dictation still works; only
+   the any-key shortcut is disabled.
 
 3. **Clone and build:**
    ```bash
@@ -69,15 +72,27 @@ daemon owns no UI itself, so none of that is required to use it.
    By default it records from the **system default** microphone. To use a specific mic, set
    `VOICECHAT_SOURCE` in the service (a name from `pactl list sources short`).
 
-5. **Bind a shortcut** to toggle dictation. The daemon does the work; the shortcut just runs
-   `voicechat toggle`. Bind that command to a hotkey in the user's desktop environment
-   (GNOME/KDE/Sway/etc. all support custom shortcuts). On **KDE Plasma**, see
-   [Global shortcut on KDE](#global-shortcut-on-kde) for a kglobalaccel registration that
-   works system-wide.
+5. 🟢 **Ask: which push-to-talk hotkey?** — *"What hotkey should toggle dictation? (e.g.
+   Meta+Esc)"* The daemon does the work; the shortcut just runs `voicechat toggle`. Bind the
+   user's chosen combo to that command:
+   - **KDE Plasma** → see [Global shortcut on KDE](#global-shortcut-on-kde). Put the chosen
+     combo in `voicechat-toggle.desktop`'s `X-KDE-Shortcuts=` line; the live `gdbus`
+     registration there is written for Meta+Esc, so for a different key either adjust the
+     keycode or just set it in *System Settings → Shortcuts* after `kbuildsycoca6`.
+   - **GNOME / Sway / others** → bind the chosen combo to `voicechat toggle` in the DE's
+     keyboard-shortcut settings.
 
-6. **Test:** run `voicechat toggle`, say a sentence, run it again — the text should paste into
-   the focused window. `VOICECHAT_DRY_PASTE=1` copies to the clipboard without synthesizing
-   the keystroke if you want to test without pasting.
+6. 🟢 **Ask: end recording with any key?** — *"Let any key (not just the hotkey) finish a
+   recording? It transcribes and pastes immediately."* Default **yes**.
+   - **Yes** → nothing to set (it's the default). Make sure the user is in the `input` group
+     (step 2) so voicechat can watch the keyboard.
+   - **No** → set `Environment=VOICECHAT_ANYKEY_STOP=0` in the service (only the hotkey ends
+     a recording).
+
+7. **Test:** run `voicechat toggle`, say a sentence, then press the hotkey (or, with any-key
+   enabled, any key) — the text should paste into the focused window. `VOICECHAT_DRY_PASTE=1`
+   copies to the clipboard without synthesizing the keystroke if you want to test without
+   pasting.
 
 ---
 
@@ -119,9 +134,13 @@ On non-KDE desktops, just bind `voicechat toggle` to a key in your DE's keyboard
   Unset = system default source.
 - `WHISPER_HTTP_URL` — whispervulkan endpoint (default `http://127.0.0.1:48450/inference`).
 - `YDOTOOL_SOCKET` — default `$XDG_RUNTIME_DIR/.ydotool_socket`.
-- `VOICECHAT_SOUND_START` / `VOICECHAT_SOUND_STOP` — notification sounds played via `pw-play`.
-  Default to `~/Music/PushToTalkStartSFX.mp3` / `PushToTalkStopSFX.mp3` if present; set these
-  to point elsewhere, or to silence them point at a non-existent path.
+- `VOICECHAT_ANYKEY_STOP` — let any key (not just the hotkey) finish a recording. On by
+  default; set `0`/`false`/`off` to require the hotkey. Needs read access to `/dev/input`
+  (the `input` group); silently disables itself if unavailable.
+- `VOICECHAT_SOUND_START` / `VOICECHAT_SOUND_STOP` — start/stop notification sounds played via
+  `pw-play`. **Disabled by default** (unset = silent). Placeholder sounds ship in
+  [`sounds/`](sounds/); replace `sounds/PushToTalkStartSFX.mp3` and `PushToTalkStopSFX.mp3`
+  with your own audio, then point these vars at them (see `voicechat.service`) to enable.
 - `VOICECHAT_ACTIVE_WINDOW_FILE` — optional file an external focus listener writes with the
   focused app id; when it reads as empty (no app focused) voicechat skips the paste and leaves
   the text on the clipboard. Unset = always paste.
