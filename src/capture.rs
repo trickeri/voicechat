@@ -1,6 +1,6 @@
 //! Mic capture via `parec` (PulseAudio/PipeWire). Records mono 16-bit PCM at 16 kHz —
 //! whisper's native rate, so no resampling needed. Exposes a smoothed RMS level (0..1)
-//! for the taskbar's audio-reactive bars.
+//! for optional external listeners/visualizers.
 //!
 //! Why parec and not cpal/ALSA: this box is PipeWire, the default ALSA device fails
 //! (dsnoop, pipewire-alsa not installed). parec talks to pipewire-pulse directly and

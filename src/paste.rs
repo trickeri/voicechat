@@ -1,7 +1,7 @@
 //! Clipboard + smart paste. Copies with PERSISTENT wl-copy (never `-o`/one-shot, which
-//! clears the selection after the first paste), detects whether the focused window is
-//! ghostty (via the active-window file the taskbar writes), and pastes with ydotool:
-//! Ctrl+Shift+V in ghostty (terminal paste), Ctrl+V everywhere else.
+//! clears the selection after the first paste), optionally detects the focused app id
+//! from a user-provided active-window file, and pastes with ydotool: Ctrl+Shift+V in
+//! ghostty-like terminals, Ctrl+V everywhere else.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -16,7 +16,9 @@ const KEY_LEFTSHIFT: &str = "42";
 const KEY_V: &str = "47";
 
 fn active_window_file() -> PathBuf {
-    state::cache_dir().join("active-window")
+    std::env::var("VOICECHAT_ACTIVE_WINDOW_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| state::cache_dir().join("active-window"))
 }
 
 fn ydotool_socket() -> String {
@@ -78,9 +80,8 @@ pub fn copy_and_paste(text: &str) -> Result<(), String> {
         return Ok(());
     }
 
-    // If no real app is focused (the plasma desktop), DON'T synthesize a paste — Ctrl+V on
-    // the desktop opens KDE's "Paste Clipboard Content" file dialog. Leave it on the
-    // clipboard so it can be pasted manually.
+    // If an external focus listener reports no real app focused (for example a desktop
+    // shell), DON'T synthesize a paste. Leave it on the clipboard for manual paste.
     let focus = std::fs::read_to_string(active_window_file())
         .unwrap_or_default()
         .trim()

@@ -4,7 +4,7 @@
 //!   voicechat toggle       toggle listening on the running daemon (taskbar hex / Meta+Escape)
 //!   voicechat start|stop   aliases for toggle (the daemon flips its own state)
 //!
-//! Flow: toggle -> capture mic (stream `level` to the taskbar) -> toggle again ->
+//! Flow: toggle -> capture mic (publish generic JSON status) -> toggle again ->
 //! whispervulkan -> clipboard + smart paste -> idle.
 
 mod capture;
@@ -121,9 +121,9 @@ fn run_daemon() {
 fn start_listening() -> Result<Session, String> {
     let cap = capture::start()?;
     state::write("listening", 0.0);
-    play_sound("VOICECHAT_SOUND_START");
+    play_sound("VOICECHAT_SOUND_START", "PushToTalkStartSFX.mp3");
 
-    // Stream the mic level to the state file ~30 Hz for the taskbar's reactive bars.
+    // Publish the mic level to the status file ~30 Hz for any external visualizer.
     let running = Arc::new(AtomicBool::new(true));
     let level = cap.level.clone();
     let run_flag = running.clone();
@@ -142,7 +142,7 @@ fn start_listening() -> Result<Session, String> {
 }
 
 fn stop_and_process(mut s: Session) {
-    play_sound("VOICECHAT_SOUND_STOP");
+    play_sound("VOICECHAT_SOUND_STOP", "PushToTalkStopSFX.mp3");
     // Stop the level writer first so it can't overwrite the processing state.
     s.writer_running.store(false, Ordering::Relaxed);
     if let Some(h) = s.writer.take() {
@@ -181,22 +181,29 @@ fn stop_and_process(mut s: Session) {
     }
 }
 
-/// Play a notification sound (non-blocking) if the given env var points at an audio file.
-/// e.g. VOICECHAT_SOUND_START / VOICECHAT_SOUND_STOP.
-fn play_sound(env_var: &str) {
-    if let Ok(path) = std::env::var(env_var) {
-        if !path.is_empty() && std::path::Path::new(&path).exists() {
-            if let Ok(child) = std::process::Command::new("pw-play").arg(&path).spawn() {
-                thread::spawn(move || {
-                    let mut c = child;
-                    let _ = c.wait();
-                });
-            }
+/// Play a notification sound (non-blocking).
+///
+/// The path comes from `env_var` (e.g. VOICECHAT_SOUND_START / VOICECHAT_SOUND_STOP)
+/// if set; otherwise it falls back to `default_name` under ~/Music.
+fn play_sound(env_var: &str, default_name: &str) {
+    let path = match std::env::var(env_var) {
+        Ok(p) if !p.is_empty() => std::path::PathBuf::from(p),
+        _ => match std::env::var_os("HOME") {
+            Some(home) => std::path::Path::new(&home).join("Music").join(default_name),
+            None => return,
+        },
+    };
+    if path.exists() {
+        if let Ok(child) = std::process::Command::new("pw-play").arg(&path).spawn() {
+            thread::spawn(move || {
+                let mut c = child;
+                let _ = c.wait();
+            });
         }
     }
 }
 
-/// Briefly show an error on the taskbar hex, then settle back to idle.
+/// Briefly publish an error state, then settle back to idle.
 fn flash_error() {
     state::write("error", 0.0);
     thread::sleep(Duration::from_millis(1100));
