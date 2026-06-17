@@ -8,9 +8,9 @@ Type=simple
 ExecStart=%h/.local/bin/voicechat run
 Restart=on-failure
 RestartSec=2
-# Which mic to dictate from. Find names with `pactl list sources short`. Leave unset to
-# use the system default source (set that in KDE System Settings > Audio). Adjust to taste.
-Environment=VOICECHAT_SOURCE=alsa_input.usb-Focusrite_Scarlett_2i2_USB_Y8D8QZU93081A1-00.HiFi__Mic1__source
+# By default voicechat records from the system default source. To dictate from a specific
+# mic, uncomment and set this to a source name from `pactl list sources short`.
+#Environment=VOICECHAT_SOURCE=alsa_input.example-source
 
 [Install]
 WantedBy=default.target
