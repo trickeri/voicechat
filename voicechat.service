@@ -18,11 +18,12 @@ RestartSec=2
 #Environment=VOICECHAT_PASTE_KEY=ctrl+v
 #Environment=VOICECHAT_PASTE_RULES=ghostty=ctrl+shift+v;kitty=ctrl+shift+v
 
-# Notification sounds (played via pw-play) — DISABLED by default. Placeholder start/stop
-# sounds ship in the repo's sounds/ directory; replace those files with your own audio (any
-# format pw-play supports), then uncomment to enable.
-#Environment=VOICECHAT_SOUND_START=%h/programming/voicechat/sounds/PushToTalkStartSFX.mp3
-#Environment=VOICECHAT_SOUND_STOP=%h/programming/voicechat/sounds/PushToTalkStopSFX.mp3
+# Notification sounds (played via pw-play) — ENABLED by default, pointing at the start/stop
+# sounds shipped in the repo's sounds/ directory. Replace those files with your own audio
+# (any format pw-play supports) to change them, point these at other files, or comment both
+# lines out to go silent. Paths assume the repo lives at ~/programming/voicechat (step 3).
+Environment=VOICECHAT_SOUND_START=%h/programming/voicechat/sounds/PushToTalkStartSFX.mp3
+Environment=VOICECHAT_SOUND_STOP=%h/programming/voicechat/sounds/PushToTalkStopSFX.mp3
 
 [Install]
 WantedBy=default.target

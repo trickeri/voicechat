@@ -100,7 +100,18 @@ daemon owns no UI itself, so none of that is required to use it.
      `VOICECHAT_PASTE_RULES=ghostty=ctrl+shift+v;kitty=ctrl+shift+v`. Per-app rules require the
      focus hint (`VOICECHAT_ACTIVE_WINDOW_FILE`) to be populated by the user's setup.
 
-8. **Test:** run `voicechat toggle`, say a sentence, then press the hotkey (or, with any-key
+8. 🟢 **Ask: start/stop notification sounds?** — *"Play a short sound when dictation starts and
+   stops? It's on by default, using the sounds shipped in the repo — you can swap in your own
+   or turn it off."* Default **yes**.
+   - **Yes** → nothing to set. The service ships `VOICECHAT_SOUND_START`/`VOICECHAT_SOUND_STOP`
+     enabled, pointing at `sounds/PushToTalkStartSFX.mp3` and `PushToTalkStopSFX.mp3`. Playback
+     uses `pw-play` (PipeWire); confirm it's installed.
+   - **To use their own sounds** → replace those two files (any format `pw-play` supports), or
+     point the two `Environment=VOICECHAT_SOUND_*` lines in the service at other files.
+   - **No** → comment out both `Environment=VOICECHAT_SOUND_*` lines in the service (unset =
+     silent).
+
+9. **Test:** run `voicechat toggle`, say a sentence, then press the hotkey (or, with any-key
    enabled, any key) — the text should paste into the focused window. `VOICECHAT_DRY_PASTE=1`
    copies to the clipboard without synthesizing the keystroke if you want to test without
    pasting.
@@ -154,9 +165,9 @@ On non-KDE desktops, just bind `voicechat toggle` to a key in your DE's keyboard
   default; set `0`/`false`/`off` to require the hotkey. Needs read access to `/dev/input`
   (the `input` group); silently disables itself if unavailable.
 - `VOICECHAT_SOUND_START` / `VOICECHAT_SOUND_STOP` — start/stop notification sounds played via
-  `pw-play`. **Disabled by default** (unset = silent). Placeholder sounds ship in
-  [`sounds/`](sounds/); replace `sounds/PushToTalkStartSFX.mp3` and `PushToTalkStopSFX.mp3`
-  with your own audio, then point these vars at them (see `voicechat.service`) to enable.
+  `pw-play`. **Enabled by default**, pointing at the sounds shipped in [`sounds/`](sounds/).
+  Replace `sounds/PushToTalkStartSFX.mp3` and `PushToTalkStopSFX.mp3` with your own audio to
+  change them, point these vars elsewhere, or comment both lines out (unset = silent).
 - `VOICECHAT_ACTIVE_WINDOW_FILE` — optional file an external focus listener writes with the
   focused app id; when it reads as empty (no app focused) voicechat skips the paste and leaves
   the text on the clipboard. Unset = always paste.

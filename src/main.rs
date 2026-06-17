@@ -222,9 +222,9 @@ fn stop_and_process(mut s: Session) {
 }
 
 /// Play a notification sound (non-blocking) if `env_var` points at an existing audio file.
-/// Disabled unless the env var is set — voicechat.service / config.env.example carry
-/// commented lines that point at the placeholder sounds shipped in `sounds/`; users
-/// replace those files (or point elsewhere) and uncomment to enable.
+/// voicechat.service / config.env.example ship these vars enabled by default, pointing at the
+/// start/stop sounds in `sounds/`; users replace those files, point elsewhere, or comment the
+/// lines out to go silent. Unset or missing-file = no sound (so a bad path is never fatal).
 fn play_sound(env_var: &str) {
     let Ok(path) = std::env::var(env_var) else {
         return;
