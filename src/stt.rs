@@ -28,7 +28,8 @@ fn wav_bytes(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>, String> {
     Ok(cursor.into_inner())
 }
 
-/// Transcribe samples via whispervulkan, returning the trimmed transcript text.
+/// Transcribe samples via whispervulkan, returning the transcript as a single
+/// line (internal whitespace/newlines collapsed to single spaces).
 pub fn transcribe(samples: &[f32], sample_rate: u32) -> Result<String, String> {
     let wav = wav_bytes(samples, sample_rate)?;
     let boundary = "----voicechatBoundary7e3f";
@@ -51,5 +52,10 @@ pub fn transcribe(samples: &[f32], sample_rate: u32) -> Result<String, String> {
         .send_bytes(&body)
         .map_err(|e| format!("POST {}: {e}", endpoint()))?;
     let text = resp.into_string().map_err(|e| e.to_string())?;
-    Ok(text.trim().to_string())
+    // Whisper's `text` format emits one line per segment, so a multi-sentence
+    // utterance comes back with embedded newlines. Collapse all whitespace runs
+    // (newlines included) into single spaces so dictation pastes as one clean
+    // line — otherwise terminals/Claude show a "[Pasted +N lines]" chip instead
+    // of the text.
+    Ok(text.split_whitespace().collect::<Vec<_>>().join(" "))
 }
