@@ -14,12 +14,15 @@
 #             clipboard -> copy to clipboard only, no keystroke
 #             emit      -> don't paste; deliver over the broadcast socket only
 #                          (still copied to the clipboard as a fallback)
+#             system    -> don't paste/copy; broadcast only. Also the AUTOMATIC mode when NO
+#                          window is focused (the desktop) — for a system-wide voice command
+#                          service (see ~/programming/Plasma/systemvoicecommands).
 #   option  : for 'paste', the key combo (e.g. ctrl+v, ctrl+shift+v, shift+insert).
 #             Defaults to VOICECHAT_PASTE_KEY, else ctrl+v.
 #
 # NOTE: matching needs the focus hint — an external listener must populate the active-window
-# file (VOICECHAT_ACTIVE_WINDOW_FILE, default ~/.cache/voicechat/active-window) with the
-# focused app id. Without it, focus reads empty and everything is treated as clipboard-only.
+# file (VOICECHAT_ACTIVE_WINDOW_FILE, default ~/.cache/voicechat/active-window) with the focused
+# app id. When it reads empty (no window focused — the desktop), the transcript is "system" mode.
 #
 # EVERY transcript is also broadcast on the Unix socket (VOICECHAT_SOCKET, default
 # $XDG_RUNTIME_DIR/voicechat.sock) as one JSON line {"text","app","mode","ts"}, regardless of

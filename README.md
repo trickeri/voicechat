@@ -15,8 +15,10 @@ shortcut ── voicechat toggle ──▶ voicechat daemon
             broadcast transcript on the Unix socket (every transcript, always)
             then per-app routing (rules.conf), by focused app:
               paste     -> wl-copy (persistent) + synthesize combo  (default)
-              clipboard -> copy only, no keystroke   (e.g. the desktop shell)
+              clipboard -> copy only, no keystroke
               emit      -> don't paste; the app consumes the socket  (e.g. Kdenlive/Krita/Inkscape)
+              system    -> no window focused (the desktop): broadcast only, for a
+                           system-wide voice-command service
 ```
 
 It publishes a small JSON status file (`~/.cache/voicechat/status.json`) and an event log
@@ -41,7 +43,10 @@ What voicechat does *locally* with each transcript is set per focused app by a r
 picks a **mode**: `paste` (copy + keystroke, the default), `clipboard` (copy only), or `emit`
 (don't paste — the app reads it off the socket instead). So normal apps get pasted into, while
 focusing **Kdenlive / Krita / Inkscape** suppresses the paste and lets your integration handle the
-text. Rules are re-read each dictation, so edits apply immediately. Matching needs the focus
+text. When **no window is focused** (the desktop), the transcript is automatically `system` mode —
+broadcast only, for a system-wide voice-command service to act on (see
+`~/programming/Plasma/systemvoicecommands`, which runs e.g. "start stream" as a shell command).
+Rules are re-read each dictation, so edits apply immediately. Matching needs the focus
 hint (`VOICECHAT_ACTIVE_WINDOW_FILE`); without a rules file, voicechat keeps its historical
 built-in defaults.
 

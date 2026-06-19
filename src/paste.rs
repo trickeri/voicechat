@@ -173,5 +173,12 @@ pub fn deliver(text: &str, bus: &Bus) -> Result<(), String> {
             eprintln!("voicechat: emit ({app}) — sent on socket, not pasting");
             Ok(())
         }
+        Mode::System => {
+            // No window focused (the desktop): a system-wide voice command. Broadcast only — no
+            // paste and no clipboard copy (a command shouldn't linger on the clipboard). The
+            // systemvoicecommands service consumes mode=="system" lines off the socket.
+            eprintln!("voicechat: system command (no focus) — sent on socket");
+            Ok(())
+        }
     }
 }

@@ -40,6 +40,10 @@ pub enum Mode {
     Clipboard,
     /// Don't paste; deliver over the broadcast socket only (still copied as a fallback).
     Emit,
+    /// No window focused (the desktop): a system-wide voice command. No paste, no clipboard
+    /// copy — only the broadcast, for a system command service to consume. Distinct from `emit`
+    /// so per-app consumers (which act on `emit`) never grab a desktop command.
+    System,
 }
 
 impl Mode {
@@ -49,6 +53,7 @@ impl Mode {
             Mode::Paste { .. } => "paste",
             Mode::Clipboard => "clipboard",
             Mode::Emit => "emit",
+            Mode::System => "system",
         }
     }
 }
@@ -74,6 +79,7 @@ fn parse_mode(mode: &str, option: Option<&str>) -> Mode {
     match mode.to_ascii_lowercase().as_str() {
         "clipboard" | "copy" => Mode::Clipboard,
         "emit" | "send" => Mode::Emit,
+        "system" => Mode::System,
         "paste" => Mode::Paste {
             combo: option.map(str::to_string).unwrap_or_else(default_combo),
         },
@@ -136,11 +142,12 @@ fn builtin(focus: &str) -> Mode {
 }
 
 /// Resolve the mode for the focused app. `focus` is expected lowercased. An empty focus (no
-/// app focused / no focus hint) always maps to `Clipboard` so voicechat never synthesizes a
-/// paste into nothing.
+/// window focused — the desktop) maps to `System`: voicechat never pastes into nothing, and the
+/// transcript is delivered only over the broadcast socket for a system-wide command service to
+/// consume.
 pub fn resolve(focus: &str) -> Mode {
     if focus.is_empty() {
-        return Mode::Clipboard;
+        return Mode::System;
     }
     from_file(focus).unwrap_or_else(|| builtin(focus))
 }
@@ -187,8 +194,8 @@ mod tests {
             resolve("com.example.editor"),
             Mode::Paste { combo: "ctrl+v".into() }
         );
-        // Empty focus never pastes.
-        assert_eq!(resolve(""), Mode::Clipboard);
+        // Empty focus (the desktop) is a system command, never a paste.
+        assert_eq!(resolve(""), Mode::System);
 
         std::env::remove_var("VOICECHAT_RULES_FILE");
         let _ = std::fs::remove_dir_all(&dir);
