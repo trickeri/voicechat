@@ -1,19 +1,23 @@
-//! Clipboard + smart paste. Copies with PERSISTENT wl-copy (never `-o`/one-shot, which
-//! clears the selection after the first paste), optionally detects the focused app id
-//! from a user-provided active-window file, and synthesizes the paste shortcut with
-//! ydotool.
+//! Transcript delivery: clipboard + smart paste + socket broadcast, routed per focused app.
 //!
-//! The shortcut is configurable: `VOICECHAT_PASTE_KEY` is the default combo (default
-//! `ctrl+v`). `VOICECHAT_PASTE_RULES` is a `;`-separated list of `app-substring=combo`
-//! per-application overrides, matched (case-insensitively) against the focused app id;
-//! it defaults to `ghostty=ctrl+shift+v` (terminals paste with Ctrl+Shift+V). Combos are
-//! written like `ctrl+shift+v` / `shift+insert`.
+//! `deliver` is the entry point. It reads the focused app id (from a user-provided
+//! active-window file), resolves a per-app `Mode` (see `rules.rs`), ALWAYS broadcasts the
+//! transcript on the bus (see `bus.rs`) so any app can tap in, then performs the local action:
+//!   - `Paste`     — copy with persistent wl-copy, then synthesize the app's paste combo.
+//!   - `Clipboard` — copy only (e.g. the desktop shell), leave it for a manual paste.
+//!   - `Emit`      — copy as a fallback but do NOT synthesize a keystroke; the forked app
+//!                   consumes the broadcast instead.
+//!
+//! Copies use PERSISTENT wl-copy (never `-o`/one-shot, which clears the selection after the
+//! first paste). The paste keystroke is synthesized with ydotool.
 
 use std::path::PathBuf;
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
+use crate::bus::Bus;
+use crate::rules::{self, Mode};
 use crate::state;
 
 /// Map a key/modifier name to its evdev keycode (as a string, for ydotool). Covers the
@@ -56,26 +60,19 @@ fn build_seq(combo: &str) -> Option<Vec<String>> {
     Some(seq)
 }
 
-/// The paste combo for the focused app: the first matching `VOICECHAT_PASTE_RULES` entry,
-/// else `VOICECHAT_PASTE_KEY`, else `ctrl+v`. `focus` is expected lowercased.
-fn paste_combo_for(focus: &str) -> String {
-    let rules = std::env::var("VOICECHAT_PASTE_RULES")
-        .unwrap_or_else(|_| "ghostty=ctrl+shift+v".to_string());
-    for rule in rules.split(';') {
-        if let Some((pat, combo)) = rule.split_once('=') {
-            let pat = pat.trim().to_lowercase();
-            if !pat.is_empty() && focus.contains(&pat) {
-                return combo.trim().to_string();
-            }
-        }
-    }
-    std::env::var("VOICECHAT_PASTE_KEY").unwrap_or_else(|_| "ctrl+v".to_string())
-}
-
 fn active_window_file() -> PathBuf {
     std::env::var("VOICECHAT_ACTIVE_WINDOW_FILE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| state::cache_dir().join("active-window"))
+}
+
+/// The focused app id (lowercased), from the user-provided active-window file. Empty when no
+/// file / no app is focused.
+fn read_focus() -> String {
+    std::fs::read_to_string(active_window_file())
+        .unwrap_or_default()
+        .trim()
+        .to_lowercase()
 }
 
 fn ydotool_socket() -> String {
@@ -95,14 +92,13 @@ fn ydotool_key(seq: &[&str]) -> Result<(), String> {
         .and_then(|s| if s.success() { Ok(()) } else { Err("ydotool exited non-zero".into()) })
 }
 
-/// Copy `text` to the clipboard (persistent) and paste it into the focused window.
-pub fn copy_and_paste(text: &str) -> Result<(), String> {
-    if text.is_empty() {
-        return Ok(());
-    }
-    // Persistent wl-copy: it daemonizes and keeps serving the clipboard, so the paste
-    // below does NOT clear it; a later copy just overrides it. Reap it when it's
-    // eventually displaced by a future copy (otherwise it lingers as a zombie).
+/// Copy `text` to the clipboard with a PERSISTENT wl-copy and wait until the compositor reports
+/// our text is the selection (so a following paste doesn't race a previous owner). Returns
+/// Ok once copied (whether or not ownership was confirmed within the timeout).
+fn copy(text: &str) -> Result<(), String> {
+    // Persistent wl-copy: it daemonizes and keeps serving the clipboard, so a later paste does
+    // NOT clear it; a future copy just overrides it. Reap it when it's eventually displaced
+    // (otherwise it lingers as a zombie).
     let child = Command::new("wl-copy")
         .arg("--")
         .arg(text)
@@ -113,46 +109,69 @@ pub fn copy_and_paste(text: &str) -> Result<(), String> {
         let _ = child.wait();
     });
 
-    // Wait until wl-copy has ACTUALLY taken ownership and the clipboard reports our text,
-    // before synthesizing the paste. Otherwise we race the previous owner (e.g. an image)
-    // and the app pastes the stale content instead. Poll up to ~1.5 s.
+    // Wait until wl-copy has ACTUALLY taken ownership and the clipboard reports our text.
+    // Otherwise we race the previous owner (e.g. an image) and the app pastes the stale
+    // content instead. Poll up to ~1.5 s.
     let want = text.trim();
-    let mut owned = false;
     for _ in 0..50 {
         thread::sleep(Duration::from_millis(30));
         if let Ok(out) = Command::new("wl-paste").arg("--no-newline").output() {
             if String::from_utf8_lossy(&out.stdout).trim() == want {
-                owned = true;
-                break;
+                return Ok(());
             }
         }
     }
-    if !owned {
-        eprintln!("voicechat: clipboard didn't settle to our text; pasting anyway");
-    }
+    eprintln!("voicechat: clipboard didn't settle to our text within timeout");
+    Ok(())
+}
 
-    // Safety/testing escape hatch: copy only, don't synthesize keystrokes.
-    if std::env::var("VOICECHAT_DRY_PASTE").is_ok() {
-        eprintln!("voicechat: dry paste (clipboard set, no keystroke)");
-        return Ok(());
-    }
-
-    // If an external focus listener reports no real app focused (for example a desktop
-    // shell), DON'T synthesize a paste. Leave it on the clipboard for manual paste.
-    let focus = std::fs::read_to_string(active_window_file())
-        .unwrap_or_default()
-        .trim()
-        .to_lowercase();
-    if focus.is_empty() || focus.contains("plasmashell") {
-        eprintln!("voicechat: no app focused (desktop) — left on clipboard, not pasting");
-        return Ok(());
-    }
-
-    let combo = paste_combo_for(&focus);
-    let seq = build_seq(&combo).unwrap_or_else(|| {
+/// Synthesize the paste keystroke for `combo`, falling back to `ctrl+v` on an unknown combo.
+fn synthesize(combo: &str) -> Result<(), String> {
+    let seq = build_seq(combo).unwrap_or_else(|| {
         eprintln!("voicechat: unrecognized paste combo '{combo}', using ctrl+v");
         build_seq("ctrl+v").unwrap()
     });
     let refs: Vec<&str> = seq.iter().map(|s| s.as_str()).collect();
     ydotool_key(&refs)
+}
+
+/// Route a finished transcript: resolve the focused app's mode, broadcast it on the bus
+/// (always), then perform the local action for that mode.
+pub fn deliver(text: &str, bus: &Bus) -> Result<(), String> {
+    if text.is_empty() {
+        return Ok(());
+    }
+    let focus = read_focus();
+    let mode = rules::resolve(&focus);
+    let app = if focus.is_empty() { "none" } else { focus.as_str() };
+
+    // Always broadcast so any app (forks, loggers, observers) can tap in, regardless of mode.
+    bus.broadcast(text, app, mode.label());
+
+    // Safety/testing escape hatch: never synthesize keystrokes, just copy.
+    let dry = std::env::var("VOICECHAT_DRY_PASTE").is_ok();
+
+    match mode {
+        Mode::Paste { combo } => {
+            copy(text)?;
+            if dry {
+                eprintln!("voicechat: dry paste (clipboard set, no keystroke)");
+                return Ok(());
+            }
+            eprintln!("voicechat: paste -> {app} ({combo})");
+            synthesize(&combo)
+        }
+        Mode::Clipboard => {
+            copy(text)?;
+            eprintln!("voicechat: clipboard only ({app}) — left for manual paste");
+            Ok(())
+        }
+        Mode::Emit => {
+            // Copy as a fallback so nothing is lost if no socket client is listening, but do
+            // not synthesize a keystroke — the forked app consumes the broadcast.
+            copy(text)?;
+            eprintln!("voicechat: emit ({app}) — sent on socket, not pasting");
+            Ok(())
+        }
+    }
 }

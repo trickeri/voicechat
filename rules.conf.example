@@ -1,0 +1,42 @@
+# voicechat per-application routing rules.
+#
+# Copy to ~/.config/voicechat/rules.conf (or point VOICECHAT_RULES_FILE at it) and edit.
+# When this file exists it fully governs per-app behavior; when it doesn't, voicechat uses its
+# built-in defaults (desktop shell = clipboard-only, ghostty = ctrl+shift+v, else ctrl+v) plus
+# any legacy VOICECHAT_PASTE_RULES. Edits take effect on the next dictation — no restart needed.
+#
+# Format: one rule per line, whitespace-separated columns, '#' starts a comment.
+#   pattern   mode        [option]
+#
+#   pattern : case-insensitive substring matched against the focused app id ('*' = catch-all).
+#             First matching rule wins; '*' is only used if nothing else matched.
+#   mode    : paste     -> copy to clipboard AND synthesize a paste keystroke
+#             clipboard -> copy to clipboard only, no keystroke
+#             emit      -> don't paste; deliver over the broadcast socket only
+#                          (still copied to the clipboard as a fallback)
+#   option  : for 'paste', the key combo (e.g. ctrl+v, ctrl+shift+v, shift+insert).
+#             Defaults to VOICECHAT_PASTE_KEY, else ctrl+v.
+#
+# NOTE: matching needs the focus hint — an external listener must populate the active-window
+# file (VOICECHAT_ACTIVE_WINDOW_FILE, default ~/.cache/voicechat/active-window) with the
+# focused app id. Without it, focus reads empty and everything is treated as clipboard-only.
+#
+# EVERY transcript is also broadcast on the Unix socket (VOICECHAT_SOCKET, default
+# $XDG_RUNTIME_DIR/voicechat.sock) as one JSON line {"text","app","mode","ts"}, regardless of
+# mode — so apps can consume it directly. 'emit' just additionally suppresses the local paste.
+
+# Terminals want Ctrl+Shift+V.
+ghostty       paste       ctrl+shift+v
+kitty         paste       ctrl+shift+v
+
+# Creative apps consume voicechat output via their own integration (forks listening on the
+# socket) — don't paste, just emit.
+kdenlive      emit
+krita         emit
+inkscape      emit
+
+# The desktop shell has no real text field — copy only, never synthesize a paste.
+plasmashell   clipboard
+
+# Everything else: normal copy + paste.
+*             paste       ctrl+v

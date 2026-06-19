@@ -7,9 +7,11 @@
 //! Flow: toggle -> capture mic (publish generic JSON status) -> toggle again ->
 //! whispervulkan -> clipboard + smart paste -> idle.
 
+mod bus;
 mod capture;
 mod keywatch;
 mod paste;
+mod rules;
 mod state;
 mod stt;
 
@@ -83,6 +85,9 @@ fn run_daemon() {
     state::write("idle", 0.0);
     eprintln!("voicechat: daemon up (pid {}), endpoint {}", std::process::id(), stt::endpoint());
 
+    // Transcript broadcast socket: every transcript is pushed here for any app to consume.
+    let bus = bus::Bus::start();
+
     let (tx, rx) = mpsc::channel::<Ev>();
     let sig_tx = tx.clone();
     let mut signals = signal_hook::iterator::Signals::new([SIGUSR1, SIGTERM, SIGINT])
@@ -105,7 +110,7 @@ fn run_daemon() {
         match ev {
             Ev::Toggle => {
                 if let Some(s) = session.take() {
-                    stop_and_process(s); // normal hotkey stop — no guard set
+                    stop_and_process(s, &bus); // normal hotkey stop — no guard set
                 } else if last_keystop.map_or(true, |t| t.elapsed() >= ECHO_GUARD) {
                     match start_listening(tx.clone()) {
                         Ok(s) => {
@@ -121,7 +126,7 @@ fn run_daemon() {
             }
             Ev::KeyFinish => {
                 if let Some(s) = session.take() {
-                    stop_and_process(s);
+                    stop_and_process(s, &bus);
                     last_keystop = Some(Instant::now());
                 }
             }
@@ -137,6 +142,7 @@ fn run_daemon() {
                     }
                 }
                 let _ = std::fs::remove_file(pid_file());
+                let _ = std::fs::remove_file(bus::socket_path());
                 state::write("idle", 0.0);
                 break;
             }
@@ -177,7 +183,7 @@ fn start_listening(tx: mpsc::Sender<Ev>) -> Result<Session, String> {
     })
 }
 
-fn stop_and_process(mut s: Session) {
+fn stop_and_process(mut s: Session, bus: &bus::Bus) {
     // Stop watching the keyboard first so stray keys during processing/paste are ignored.
     if let Some(kw) = s.keywatch.take() {
         kw.stop();
@@ -203,8 +209,8 @@ fn stop_and_process(mut s: Session) {
     match stt::transcribe(&samples, sample_rate) {
         Ok(text) if !text.is_empty() => {
             eprintln!("voicechat: \"{text}\"");
-            if let Err(e) = paste::copy_and_paste(&text) {
-                eprintln!("voicechat: paste failed: {e}");
+            if let Err(e) = paste::deliver(&text, bus) {
+                eprintln!("voicechat: delivery failed: {e}");
             }
             state::write("done", 0.0);
             thread::sleep(Duration::from_millis(250));

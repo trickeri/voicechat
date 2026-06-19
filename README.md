@@ -12,14 +12,38 @@ served by the [`whispervulkan`](https://github.com/trickeri/whispervulkan) daemo
 shortcut ── voicechat toggle ──▶ voicechat daemon
    capture mic (parec, 16 kHz mono)
    on stop: POST wav ──▶ whispervulkan /inference ──▶ transcript
-            wl-copy (persistent) + smart paste:
-              terminal (ghostty) -> Ctrl+Shift+V
-              else               -> Ctrl+V
+            broadcast transcript on the Unix socket (every transcript, always)
+            then per-app routing (rules.conf), by focused app:
+              paste     -> wl-copy (persistent) + synthesize combo  (default)
+              clipboard -> copy only, no keystroke   (e.g. the desktop shell)
+              emit      -> don't paste; the app consumes the socket  (e.g. Kdenlive/Krita/Inkscape)
 ```
 
 It publishes a small JSON status file (`~/.cache/voicechat/status.json`) and an event log
 (`~/.cache/voicechat/events.jsonl`) that any taskbar/widget/visualizer can read — but the
 daemon owns no UI itself, so none of that is required to use it.
+
+### Tapping into transcripts (per-app behavior)
+
+Other applications can consume voicechat's output directly. Every finished transcript is
+broadcast on a Unix domain socket (`$XDG_RUNTIME_DIR/voicechat.sock`) as one JSON line:
+
+```json
+{"text":"hello world","app":"kdenlive","mode":"emit","ts":1718755200.123}
+```
+
+Connect and read lines (`socat - UNIX-CONNECT:$XDG_RUNTIME_DIR/voicechat.sock`, or a socket
+client in your app) to receive transcripts. The broadcast is unconditional — it fires in every
+mode, so loggers and observers see paste-mode dictation too.
+
+What voicechat does *locally* with each transcript is set per focused app by a rules file
+(`~/.config/voicechat/rules.conf` — see [`rules.conf.example`](rules.conf.example)). Each rule
+picks a **mode**: `paste` (copy + keystroke, the default), `clipboard` (copy only), or `emit`
+(don't paste — the app reads it off the socket instead). So normal apps get pasted into, while
+focusing **Kdenlive / Krita / Inkscape** suppresses the paste and lets your integration handle the
+text. Rules are re-read each dictation, so edits apply immediately. Matching needs the focus
+hint (`VOICECHAT_ACTIVE_WINDOW_FILE`); without a rules file, voicechat keeps its historical
+built-in defaults.
 
 ---
 
@@ -93,12 +117,14 @@ daemon owns no UI itself, so none of that is required to use it.
    default is Ctrl+V, which works in most apps."* Default **Ctrl+V**.
    - Set `Environment=VOICECHAT_PASTE_KEY=ctrl+v` (or the chosen combo) in the service. Combos
      are written like `ctrl+v` / `ctrl+shift+v` / `shift+insert`.
-   - **Tell the user:** some apps need a *different* paste shortcut, so they may want their own
-     per-application rules. voicechat ships one built-in rule — terminals like **ghostty** use
-     `ctrl+shift+v`. Override or extend via `VOICECHAT_PASTE_RULES`, a `;`-separated list of
-     `app-substring=combo` (matched against the focused app id), e.g.
-     `VOICECHAT_PASTE_RULES=ghostty=ctrl+shift+v;kitty=ctrl+shift+v`. Per-app rules require the
-     focus hint (`VOICECHAT_ACTIVE_WINDOW_FILE`) to be populated by the user's setup.
+   - **Tell the user:** some apps need a *different* paste shortcut — or no paste at all (an
+     app that consumes transcripts off the socket). Both are set per app in a rules file. Copy
+     [`rules.conf.example`](rules.conf.example) to `~/.config/voicechat/rules.conf` and edit:
+     each line is `pattern  mode  [combo]`, where `mode` is `paste`, `clipboard` (copy only),
+     or `emit` (don't paste — deliver on the socket). For example terminals paste with
+     `ctrl+shift+v`, while `kdenlive`/`krita`/`inkscape` use `emit`. Per-app rules require the focus
+     hint (`VOICECHAT_ACTIVE_WINDOW_FILE`) to be populated by the user's setup. (The legacy
+     `VOICECHAT_PASTE_RULES` env var still works when no rules file is present.)
 
 8. 🟢 **Ask: start/stop notification sounds?** — *"Play a short sound when dictation starts and
    stops? It's on by default, using the sounds shipped in the repo — you can swap in your own
@@ -158,9 +184,16 @@ On non-KDE desktops, just bind `voicechat toggle` to a key in your DE's keyboard
 - `YDOTOOL_SOCKET` — default `$XDG_RUNTIME_DIR/.ydotool_socket`.
 - `VOICECHAT_PASTE_KEY` — default paste combo (default `ctrl+v`). Written like `ctrl+v` /
   `ctrl+shift+v` / `shift+insert` (modifiers: ctrl, shift, alt, super; plus a–z or insert).
-- `VOICECHAT_PASTE_RULES` — per-app paste overrides, `;`-separated `app-substring=combo`
-  matched against the focused app id. Default `ghostty=ctrl+shift+v`. Needs the focus hint
-  (`VOICECHAT_ACTIVE_WINDOW_FILE`) to be populated.
+  Used as the default combo for `paste` rules that don't specify their own.
+- `VOICECHAT_RULES_FILE` — per-app routing rules file (default `~/.config/voicechat/rules.conf`).
+  Lines are `pattern  mode  [combo]`; `mode` is `paste` / `clipboard` / `emit`. Re-read each
+  dictation. See [`rules.conf.example`](rules.conf.example). Needs the focus hint
+  (`VOICECHAT_ACTIVE_WINDOW_FILE`).
+- `VOICECHAT_SOCKET` — Unix socket transcripts are broadcast on (default
+  `$XDG_RUNTIME_DIR/voicechat.sock`). Each transcript is one JSON line
+  `{"text","app","mode","ts"}`; any app can connect and read to consume voicechat output.
+- `VOICECHAT_PASTE_RULES` — legacy per-app paste overrides, `;`-separated `app-substring=combo`.
+  Only consulted when no rules file exists. Default `ghostty=ctrl+shift+v`. Prefer the rules file.
 - `VOICECHAT_ANYKEY_STOP` — let any key (not just the hotkey) finish a recording. On by
   default; set `0`/`false`/`off` to require the hotkey. Needs read access to `/dev/input`
   (the `input` group); silently disables itself if unavailable.
