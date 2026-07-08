@@ -5,10 +5,11 @@
 //!   voicechat start|stop   aliases for toggle (the daemon flips its own state)
 //!
 //! Flow: toggle -> capture mic (publish generic JSON status) -> toggle again ->
-//! whispervulkan -> clipboard + smart paste -> idle.
+//! whispermodel -> clipboard + smart paste -> idle.
 
 mod bus;
 mod capture;
+mod clean;
 mod keywatch;
 mod paste;
 mod rules;
@@ -110,8 +111,22 @@ fn run_daemon() {
         match ev {
             Ev::Toggle => {
                 if let Some(s) = session.take() {
+                    // DIAG: a SIGUSR1 toggle is the *only* non-keyboard way a recording stops.
+                    // If a cutoff shows this with no preceding any-key-stop line, a phantom
+                    // toggle (taskbar hex, gesture daemon, stray `voicechat toggle`) ended it.
+                    eprintln!("voicechat: stop reason = SIGUSR1 toggle (hotkey / taskbar / CLI)");
                     stop_and_process(s, &bus); // normal hotkey stop — no guard set
                 } else if last_keystop.map_or(true, |t| t.elapsed() >= ECHO_GUARD) {
+                    // No-focus routing: if nothing is focused (the desktop), this hotkey is an
+                    // OS voice-command trigger, not dictation. Hand off to `voiceagent command`
+                    // (which owns its own mic -> STT -> classify -> action) and do NOT start a
+                    // recording here — otherwise we'd double-record. When a window IS focused,
+                    // fall through to normal dictation below.
+                    if no_window_focused() {
+                        eprintln!("voicechat: no focus -> handing off to `voiceagent command`");
+                        spawn_voiceagent_command();
+                        continue;
+                    }
                     match start_listening(tx.clone()) {
                         Ok(s) => {
                             session = Some(s);
@@ -126,6 +141,9 @@ fn run_daemon() {
             }
             Ev::KeyFinish => {
                 if let Some(s) = session.take() {
+                    // DIAG: paired with the `any-key-stop fired on <Key>` line from keywatch,
+                    // this confirms a keyboard key (not a signal) ended the recording.
+                    eprintln!("voicechat: stop reason = any-key-stop (keyboard)");
                     stop_and_process(s, &bus);
                     last_keystop = Some(Instant::now());
                 }
@@ -197,6 +215,14 @@ fn stop_and_process(mut s: Session, bus: &bus::Bus) {
 
     let sample_rate = s.cap.sample_rate;
     let samples = s.cap.finish(); // stops parec and returns the recording
+    // DIAG: how much audio we actually captured. If this is far shorter than how long you
+    // spoke, capture stopped early (see capture.rs parec EOF logs); if it matches your speech
+    // but still feels cut, the recording was stopped early by a signal/key (see stop reason).
+    eprintln!(
+        "voicechat: captured {:.1}s ({} samples)",
+        samples.len() as f32 / sample_rate as f32,
+        samples.len()
+    );
 
     if samples.len() < sample_rate as usize / 5 {
         // < ~0.2 s captured — treat as a no-op tap.
@@ -207,23 +233,67 @@ fn stop_and_process(mut s: Session, bus: &bus::Bus) {
 
     state::write("processing", 0.0);
     match stt::transcribe(&samples, sample_rate) {
-        Ok(text) if !text.is_empty() => {
-            eprintln!("voicechat: \"{text}\"");
-            if let Err(e) = paste::deliver(&text, bus) {
-                eprintln!("voicechat: delivery failed: {e}");
+        Ok(raw) => {
+            // Strip spoken filler words ("um", "uh", …) before delivery — the raw transcript
+            // stays verbatim on the bus/STT side; this only cleans what we paste. A pure-filler
+            // utterance cleans to empty and is treated the same as an empty transcript.
+            let text = clean::strip_fillers(&raw);
+            if !text.is_empty() {
+                eprintln!("voicechat: \"{text}\"");
+                if let Err(e) = paste::deliver(&text, bus) {
+                    eprintln!("voicechat: delivery failed: {e}");
+                }
+                state::write("done", 0.0);
+                thread::sleep(Duration::from_millis(250));
+                state::write("idle", 0.0);
+            } else {
+                eprintln!("voicechat: empty transcript");
+                flash_error();
             }
-            state::write("done", 0.0);
-            thread::sleep(Duration::from_millis(250));
-            state::write("idle", 0.0);
-        }
-        Ok(_) => {
-            eprintln!("voicechat: empty transcript");
-            flash_error();
         }
         Err(e) => {
             eprintln!("voicechat: transcribe failed: {e}");
             flash_error();
         }
+    }
+}
+
+/// True when no real application window is focused (the desktop is "focused"): the focus hint
+/// file is missing/empty, or names the shell (plasmashell). Mirrors the desktop/System detection
+/// in `rules.rs` so the no-focus hotkey routing agrees with the paste guard. Unset/missing focus
+/// file = treat as desktop (no focus), so the OS-command path is reachable without the optional
+/// focus listener installed; install it to get true dictation-vs-command switching.
+fn no_window_focused() -> bool {
+    let file = std::env::var("VOICECHAT_ACTIVE_WINDOW_FILE")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| state::cache_dir().join("active-window"));
+    let focus = std::fs::read_to_string(file)
+        .unwrap_or_default()
+        .trim()
+        .to_lowercase();
+    focus.is_empty() || focus.contains("plasmashell")
+}
+
+/// Launch the OS voice-command agent (`voiceagent command`) detached. Overridable via
+/// `VOICECHAT_OSCOMMAND_CMD` (whitespace-split argv) for forks / testing.
+fn spawn_voiceagent_command() {
+    let cmd = std::env::var("VOICECHAT_OSCOMMAND_CMD").unwrap_or_default();
+    let argv: Vec<String> = if cmd.trim().is_empty() {
+        let home = std::env::var("HOME").unwrap_or_else(|_| "/home".into());
+        vec![format!("{home}/.local/bin/voiceagent"), "command".into()]
+    } else {
+        cmd.split_whitespace().map(str::to_string).collect()
+    };
+    let (prog, args) = argv.split_first().expect("non-empty argv");
+    match std::process::Command::new(prog).args(args).spawn() {
+        Ok(child) => {
+            // Reap it so it doesn't linger as a zombie.
+            thread::spawn(move || {
+                let mut c = child;
+                let _ = c.wait();
+            });
+        }
+        Err(e) => eprintln!("voicechat: failed to launch `{prog}`: {e}"),
     }
 }
 

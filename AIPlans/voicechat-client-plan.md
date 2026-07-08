@@ -2,14 +2,14 @@
 
 **Repo:** `trickeri/voicechat` → `~/programming/voicechat`
 **Status:** BUILT — headless Rust daemon running as a `systemd --user` service; taskbar `VoiceMonitor.qml` live.
-**Depends on:** `whispervulkan` daemon (see `~/programming/whispervulkan/AIPlans/`) for all STT.
+**Depends on:** `whispermodel` daemon (see `~/programming/Models/whispermodel/AIPlans/`) for all STT.
 **Scope:** Lean **speech-to-text only**. No conversation, no LLM, no TTS. **One hidden background
 process**, no window ever — the *only* visible surface is the taskbar hex
 (`trikeri_taskbar/VOICE_INDICATOR_PLAN.md`), which shows state + audio reactivity.
 **Flow:** `Meta+Escape` (or click the hex) → speak → transcript → clipboard + smart-paste into the
 focused window → idle.
 
-It does **no** transcription itself: it captures mic audio and POSTs it to `whispervulkan`.
+It does **no** transcription itself: it captures mic audio and POSTs it to `whispermodel`.
 
 ---
 
@@ -18,7 +18,7 @@ It does **no** transcription itself: it captures mic audio and POSTs it to `whis
 "open whisper" uses ~1 GB RAM, shows popups, and steals a window we can't place. We want **none of
 that window**: a tiny headless Rust process that sits idle, wakes on a hotkey, dictates into whatever
 is focused, and whose *only* visible surface is the taskbar hex we already control. STT is handled by
-the **shared** `whispervulkan` daemon (model warm in VRAM, not re-loaded per app). `whispervulkan` is
+the **shared** `whispermodel` daemon (model warm in VRAM, not re-loaded per app). `whispermodel` is
 the engine; `voicechat` is the glue (capture → STT → paste) + the state-file the taskbar renders.
 
 ## 2. Stack decision
@@ -27,7 +27,7 @@ the engine; `voicechat` is the glue (capture → STT → paste) + the state-file
 Tauri+Svelte idea — there is no GUI to host, so a webview would be pure overhead.)
 
 - Everything the app does is backend work Rust already suits: PipeWire mic capture (`cpal`/`pw`),
-  16 kHz resample, HTTP to whispervulkan (`reqwest`/`ureq`), key injection (`wtype`/`ydotool`),
+  16 kHz resample, HTTP to whispermodel (`reqwest`/`ureq`), key injection (`wtype`/`ydotool`),
   atomic state-file writes.
 - Ships as a small daemon binary + a `voicechat-dictate` CLI verb (`toggle`/`start`/`stop`) that the
   taskbar hex and the `Meta+Escape` global shortcut invoke. Runs under `systemd --user`.
@@ -66,15 +66,15 @@ read a local script/cache via `P5Support.DataSource` executable engine — see t
   Writing a small file is cheap and atomic (write temp + rename); no IPC server needed on the client.
   `level` is 0..1 mic RMS, written at ~30–60 Hz **while listening**, so the taskbar's 3-line
   equalizer can be audio-reactive (see `trikeri_taskbar/VOICE_INDICATOR_PLAN.md`). `processing` =
-  transcribing (waiting on whispervulkan); `done` = brief flash after paste, then back to `idle`.
+  transcribing (waiting on whispermodel); `done` = brief flash after paste, then back to `idle`.
 - **Everything is driven from the taskbar** (no window): the headless `voicechat-dictate` daemon does
-  capture → whispervulkan → clipboard + smart paste, toggled by the taskbar hex / `Meta+Escape`.
+  capture → whispermodel → clipboard + smart paste, toggled by the taskbar hex / `Meta+Escape`.
 - A new `plasmoid/.../contents/ui/VoiceMonitor.qml` (+ a fast `contents/scripts/voice-state.sh`
   cat-the-cache reader, matching the SystemMonitor/AiUsage pattern) renders the indicator in the
   Nuldrums palette: still cyan when `idle`, cyan-filled with black audio-reactive bars when
   `listening`, purple/black when `processing`, brief flash on `done`. Stale `ts` (e.g. >3 s in a live
   state) → fall back to idle so a crashed client doesn't leave it stuck "listening".
-- **Why a state file, not the daemon's state:** the engine (`whispervulkan`) only knows
+- **Why a state file, not the daemon's state:** the engine (`whispermodel`) only knows
   "transcribing"; voicechat owns the capture→paste pipeline and is the only thing that also knows
   `listening` (and the live mic `level`). So the client owns the indicator state.
 - Clicking the taskbar indicator toggles dictation (same as `Meta+Escape`). Placement within the
@@ -87,7 +87,7 @@ read a local script/cache via `P5Support.DataSource` executable engine — see t
 
 - Capture mic via PipeWire (`pw-record`/`parec` present, or `cpal` crate in Rust). Record to a buffer.
 - Resample to **16 kHz mono WAV** (whisper's native rate) before sending — ffmpeg present, or do it
-  in-process. Per the daemon contract, **the client owns capture + resample** (whispervulkan plan §6).
+  in-process. Per the daemon contract, **the client owns capture + resample** (whispermodel plan §6).
 - VAD/endpointing: simple silence detection to auto-stop on release, or rely on push-to-talk
   key-up = stop. (Daemon also has optional silero VAD for trimming.)
 
@@ -115,7 +115,7 @@ read a local script/cache via `P5Support.DataSource` executable engine — see t
 │   ├── main.rs                  # daemon: own the mic-toggle state machine, write state.json
 │   ├── bin/voicechat-dictate.rs # tiny CLI: toggle|start|stop (invoked by taskbar hex + hotkey)
 │   ├── capture.rs               # PipeWire mic capture + RMS level + 16 kHz resample
-│   ├── stt.rs                   # whispervulkan HTTP client
+│   ├── stt.rs                   # whispermodel HTTP client
 │   ├── paste.rs                 # wl-copy (persistent) + focus detect + wtype/ydotool smart paste
 │   └── state.rs                 # atomic ~/.cache/voicechat/state.json writer
 ├── config.toml                  # gitignored: whisper url, hotkey, ptt-vs-toggle default
@@ -125,15 +125,15 @@ read a local script/cache via `P5Support.DataSource` executable engine — see t
 
 - `config.toml` keys: `WHISPER_HTTP_URL=http://127.0.0.1:48450/inference`, hotkey,
   ptt-vs-toggle default, language.
-- Lifecycle: `systemd --user` like `whispervulkan`; expose `~/.local/bin/voicechat-dictate` shim
+- Lifecycle: `systemd --user` like `whispermodel`; expose `~/.local/bin/voicechat-dictate` shim
   (PATH per memory `local-bin-graphical-path`) so the hex/hotkey can invoke it.
 
-## 7. Dependency on whispervulkan
+## 7. Dependency on whispermodel
 
 - voicechat is useless without the daemon running. Before a toggle, probe `GET /health` (or a tiny
   `/inference`); if down, set state to an `error` flash on the taskbar hex and (optionally) run
-  `systemctl --user start whispervulkan` itself — no window to show a button in.
-- Build `whispervulkan` **first**; voicechat's STT calls are just the curl contract in that plan §6.
+  `systemctl --user start whispermodel` itself — no window to show a button in.
+- Build `whispermodel` **first**; voicechat's STT calls are just the curl contract in that plan §6.
 
 ## 8. Build order / milestones
 
@@ -142,7 +142,7 @@ read a local script/cache via `P5Support.DataSource` executable engine — see t
 2. **Mic capture → 16 kHz WAV** in Rust, emitting RMS `level`.
 3. **State-file writer** — emit `~/.cache/voicechat/state.json` on every transition + `level` while
    listening (§4a). Cheap, atomic. Unblocks the taskbar indicator independently.
-4. **whispervulkan client** — POST wav, get transcript. (Requires the daemon.)
+4. **whispermodel client** — POST wav, get transcript. (Requires the daemon.)
 5. **Global hotkey** — `Meta+Escape` → `voicechat-dictate toggle` (see §5 / taskbar plan).
 6. **Taskbar `VoiceMonitor.qml`** — in the **`trikeri_taskbar`** repo: new QML component + fast
    `voice-state.sh` reader, animated by state, stale-`ts` → idle. (Cross-repo; track there.)
@@ -159,6 +159,6 @@ read a local script/cache via `P5Support.DataSource` executable engine — see t
 ## Related memory
 `trik-klip-linux-dev` (whisper.cpp Vulkan build recipe — the engine side),
 `preserve-windows-builds`, `local-bin-graphical-path`.
-`systemflow` (avoid hotkey clashes), `rice` (honeycomb taskbar). Engine plan: `whispervulkan`.
+`systemflow` (avoid hotkey clashes), `rice` (honeycomb taskbar). Engine plan: `whispermodel`.
 Cross-repo: `trikeri_taskbar` (`plasmoid/com.nuldrums.honeycomb/`, `AI_USAGE_METERS_PLAN.md` — the
 fast-cache-reader pattern the `VoiceMonitor.qml` indicator follows).

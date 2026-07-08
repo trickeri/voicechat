@@ -2,7 +2,7 @@
 name = "voicechat"
 version = "0.1.0"
 edition = "2021"
-description = "Headless dictation daemon: mic -> whispervulkan -> clipboard + smart paste. No window."
+description = "Headless dictation daemon: mic -> whispermodel -> clipboard + smart paste. No window."
 license = "MIT"
 
 [[bin]]

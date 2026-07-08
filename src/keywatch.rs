@@ -95,14 +95,17 @@ where
                 };
                 for ev in events {
                     // value 1 == key press (0 release, 2 autorepeat).
-                    if matches!(ev.kind(), InputEventKind::Key(_))
-                        && ev.value() == 1
-                        && started.elapsed() >= grace
-                    {
-                        if !fired.swap(true, Ordering::SeqCst) {
-                            on_key();
+                    if let InputEventKind::Key(key) = ev.kind() {
+                        if ev.value() == 1 && started.elapsed() >= grace {
+                            if !fired.swap(true, Ordering::SeqCst) {
+                                // DIAG: name the exact key that ended the recording so a
+                                // mysterious "it cut off and I didn't press anything" can be
+                                // traced to a real keypress (or ruled out entirely).
+                                eprintln!("voicechat: any-key-stop fired on {key:?}");
+                                on_key();
+                            }
+                            return;
                         }
-                        return;
                     }
                 }
             }

@@ -41,7 +41,9 @@ pub fn start() -> Result<Capture, String> {
     }
     let mut child = cmd
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        // DIAG: surface parec's own warnings/errors to the journal. If PipeWire suspends or
+        // drops the mic source mid-dictation, parec logs it here — previously swallowed by null.
+        .stderr(Stdio::inherit())
         .spawn()
         .map_err(|e| format!("spawn parec: {e}"))?;
 
@@ -55,10 +57,25 @@ pub fn start() -> Result<Capture, String> {
     let run = running.clone();
     let reader = thread::spawn(move || {
         let mut raw = [0u8; 4096];
+        let mut total: u64 = 0;
+        let started = std::time::Instant::now();
         while run.load(Ordering::Relaxed) {
             match stdout.read(&mut raw) {
-                Ok(0) => break,
+                Ok(0) => {
+                    // EOF: parec closed stdout, i.e. the capture stream ended on its own
+                    // (mic source removed/suspended, parec exited). The session is still
+                    // "listening" but NO further audio will be captured from here on — a
+                    // silent mid-dictation cutoff. This is the smoking gun if it appears.
+                    eprintln!(
+                        "voicechat: capture: parec EOF after {:.1}s ({} samples) — stream ended, \
+                         capturing stops (session still listening!)",
+                        started.elapsed().as_secs_f32(),
+                        total
+                    );
+                    break;
+                }
                 Ok(n) => {
+                    total += (n / 2) as u64;
                     let mut chunk = Vec::with_capacity(n / 2);
                     for pair in raw[..n].chunks_exact(2) {
                         let v = i16::from_le_bytes([pair[0], pair[1]]) as f32 / i16::MAX as f32;
@@ -76,7 +93,15 @@ pub fn start() -> Result<Capture, String> {
                         }
                     }
                 }
-                Err(_) => break,
+                Err(e) => {
+                    eprintln!(
+                        "voicechat: capture: parec read error after {:.1}s ({} samples): {e} \
+                         — capturing stops (session still listening!)",
+                        started.elapsed().as_secs_f32(),
+                        total
+                    );
+                    break;
+                }
             }
         }
     });

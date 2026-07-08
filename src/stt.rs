@@ -1,4 +1,4 @@
-//! whispervulkan HTTP client. Writes the captured mono f32 samples to a 16-bit WAV
+//! whispermodel HTTP client. Writes the captured mono f32 samples to a 16-bit WAV
 //! (native rate) and POSTs it as multipart/form-data. whisper-server `--convert`
 //! resamples to 16 kHz server-side via ffmpeg.
 
@@ -28,7 +28,7 @@ fn wav_bytes(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>, String> {
     Ok(cursor.into_inner())
 }
 
-/// Transcribe samples via whispervulkan, returning the transcript as a single
+/// Transcribe samples via whispermodel, returning the transcript as a single
 /// line (internal whitespace/newlines collapsed to single spaces).
 pub fn transcribe(samples: &[f32], sample_rate: u32) -> Result<String, String> {
     let wav = wav_bytes(samples, sample_rate)?;
