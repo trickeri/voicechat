@@ -5,11 +5,12 @@
 //!   voicechat start|stop   aliases for toggle (the daemon flips its own state)
 //!
 //! Flow: toggle -> capture mic (publish generic JSON status) -> toggle again ->
-//! whispermodel -> clipboard + smart paste -> idle.
+//! NulSpeech2Text -> clipboard + smart paste -> idle.
 
 mod bus;
 mod capture;
 mod clean;
+mod clock;
 mod keywatch;
 mod paste;
 mod rules;
@@ -78,6 +79,11 @@ struct Session {
     writer_running: Arc<AtomicBool>,
     writer: Option<thread::JoinHandle<()>>,
     keywatch: Option<keywatch::KeyWatch>,
+    /// Monotonic start of the recording — for elapsed/gap math (immune to clock jumps).
+    started: Instant,
+    /// Wall-clock "HH:MM:SS.mmm" the recording started, so a cutoff line reads as a real
+    /// timeline (started 14:23:01.100 → hotkey-end 14:23:07.900 → recording ended 14:23:07.930).
+    started_wall: String,
 }
 
 fn run_daemon() {
@@ -111,11 +117,22 @@ fn run_daemon() {
         match ev {
             Ev::Toggle => {
                 if let Some(s) = session.take() {
+                    let stop_at = Instant::now();
+                    // TIMELINE: this is the exact instant the END hotkey was seen by the daemon.
+                    // Compare its wall-clock stamp to when you *felt* you pressed the key, and to
+                    // the "recording ENDED" line below — the gap between them is the tail window
+                    // where any trailing speech would be lost.
+                    eprintln!(
+                        "voicechat: [{}] HOTKEY-END pressed (SIGUSR1 toggle) — {:.2}s into recording (started [{}])",
+                        clock::stamp(),
+                        s.started.elapsed().as_secs_f32(),
+                        s.started_wall
+                    );
                     // DIAG: a SIGUSR1 toggle is the *only* non-keyboard way a recording stops.
                     // If a cutoff shows this with no preceding any-key-stop line, a phantom
                     // toggle (taskbar hex, gesture daemon, stray `voicechat toggle`) ended it.
                     eprintln!("voicechat: stop reason = SIGUSR1 toggle (hotkey / taskbar / CLI)");
-                    stop_and_process(s, &bus); // normal hotkey stop — no guard set
+                    stop_and_process(s, &bus, stop_at); // normal hotkey stop — no guard set
                 } else if last_keystop.map_or(true, |t| t.elapsed() >= ECHO_GUARD) {
                     // No-focus routing: if nothing is focused (the desktop), this hotkey is an
                     // OS voice-command trigger, not dictation. Hand off to `voiceagent command`
@@ -141,10 +158,20 @@ fn run_daemon() {
             }
             Ev::KeyFinish => {
                 if let Some(s) = session.take() {
+                    let stop_at = Instant::now();
+                    // TIMELINE: exact instant the any-key stop was seen (paired with keywatch's
+                    // "any-key-stop fired on <Key>" line, which names the key). Same purpose as the
+                    // SIGUSR1 branch above — anchor the END moment on the wall clock.
+                    eprintln!(
+                        "voicechat: [{}] HOTKEY-END pressed (any-key-stop) — {:.2}s into recording (started [{}])",
+                        clock::stamp(),
+                        s.started.elapsed().as_secs_f32(),
+                        s.started_wall
+                    );
                     // DIAG: paired with the `any-key-stop fired on <Key>` line from keywatch,
                     // this confirms a keyboard key (not a signal) ended the recording.
                     eprintln!("voicechat: stop reason = any-key-stop (keyboard)");
-                    stop_and_process(s, &bus);
+                    stop_and_process(s, &bus, stop_at);
                     last_keystop = Some(Instant::now());
                 }
             }
@@ -170,6 +197,11 @@ fn run_daemon() {
 
 fn start_listening(tx: mpsc::Sender<Ev>) -> Result<Session, String> {
     let cap = capture::start()?;
+    let started = Instant::now();
+    let started_wall = clock::stamp();
+    // TIMELINE anchor: everything downstream (hotkey-end, recording-ended, transcribe, deliver)
+    // reports its offset from here, and this wall-clock is echoed on the stop lines.
+    eprintln!("voicechat: [{started_wall}] recording START");
     state::write("listening", 0.0);
     play_sound("VOICECHAT_SOUND_START");
 
@@ -198,10 +230,19 @@ fn start_listening(tx: mpsc::Sender<Ev>) -> Result<Session, String> {
         writer_running: running,
         writer: Some(writer),
         keywatch,
+        started,
+        started_wall,
     })
 }
 
-fn stop_and_process(mut s: Session, bus: &bus::Bus) {
+/// `stop_at` is the monotonic instant the END hotkey/key was seen (captured by the caller the
+/// moment the event arrived, before any teardown), so every "since HOTKEY-END" delta below is
+/// measured from the real key event, not from where this function happens to start running.
+fn stop_and_process(mut s: Session, bus: &bus::Bus, stop_at: Instant) {
+    // Snapshot the start anchors before we move `s.cap` out via finish().
+    let started = s.started;
+    let started_wall = s.started_wall.clone();
+
     // Stop watching the keyboard first so stray keys during processing/paste are ignored.
     if let Some(kw) = s.keywatch.take() {
         kw.stop();
@@ -214,14 +255,24 @@ fn stop_and_process(mut s: Session, bus: &bus::Bus) {
     }
 
     let sample_rate = s.cap.sample_rate;
+    let drain_started = Instant::now();
     let samples = s.cap.finish(); // stops parec and returns the recording
-    // DIAG: how much audio we actually captured. If this is far shorter than how long you
-    // spoke, capture stopped early (see capture.rs parec EOF logs); if it matches your speech
-    // but still feels cut, the recording was stopped early by a signal/key (see stop reason).
+    let drain_ms = drain_started.elapsed().as_millis();
+    let audio_secs = samples.len() as f32 / sample_rate as f32;
+    // TIMELINE: this is when the recording actually ENDED (parec killed + buffer drained). The
+    // "since HOTKEY-END" figure is the tail window — the wall-clock gap between you hitting the
+    // key and audio truly stopping. If a word got clipped, compare `audio` here against how long
+    // you spoke: shorter than your speech => capture stopped early (see capture.rs EOF/read-error
+    // lines); matches your speech but still feels cut => it was ended early (see stop reason).
     eprintln!(
-        "voicechat: captured {:.1}s ({} samples)",
-        samples.len() as f32 / sample_rate as f32,
-        samples.len()
+        "voicechat: [{}] recording ENDED — {:.2}s audio ({} samples); \
+         {}ms since HOTKEY-END (parec drain {}ms); total record window {:.2}s",
+        clock::stamp(),
+        audio_secs,
+        samples.len(),
+        stop_at.elapsed().as_millis(),
+        drain_ms,
+        started.elapsed().as_secs_f32(),
     );
 
     if samples.len() < sample_rate as usize / 5 {
@@ -232,8 +283,19 @@ fn stop_and_process(mut s: Session, bus: &bus::Bus) {
     }
 
     state::write("processing", 0.0);
+    let stt_started = Instant::now();
+    eprintln!(
+        "voicechat: [{}] transcribe START ({:.2}s audio -> NulSpeech2Text)",
+        clock::stamp(),
+        audio_secs
+    );
     match stt::transcribe(&samples, sample_rate) {
         Ok(raw) => {
+            eprintln!(
+                "voicechat: [{}] transcribe DONE in {}ms",
+                clock::stamp(),
+                stt_started.elapsed().as_millis()
+            );
             // Strip spoken filler words ("um", "uh", …) before delivery — the raw transcript
             // stays verbatim on the bus/STT side; this only cleans what we paste. A pure-filler
             // utterance cleans to empty and is treated the same as an empty transcript.
@@ -243,6 +305,17 @@ fn stop_and_process(mut s: Session, bus: &bus::Bus) {
                 if let Err(e) = paste::deliver(&text, bus) {
                     eprintln!("voicechat: delivery failed: {e}");
                 }
+                // TIMELINE close: text is on the clipboard/pasted. `chars` lets you spot a
+                // truncated transcript at a glance (pair it with the audio length above); the
+                // whole-turn figure is start-of-recording → delivered.
+                eprintln!(
+                    "voicechat: [{}] DELIVERED — {} chars, {}ms since HOTKEY-END, whole turn {:.2}s (started [{}])",
+                    clock::stamp(),
+                    text.chars().count(),
+                    stop_at.elapsed().as_millis(),
+                    started.elapsed().as_secs_f32(),
+                    started_wall,
+                );
                 state::write("done", 0.0);
                 thread::sleep(Duration::from_millis(250));
                 state::write("idle", 0.0);

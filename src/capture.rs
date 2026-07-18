@@ -1,5 +1,5 @@
 //! Mic capture via `parec` (PulseAudio/PipeWire). Records mono 16-bit PCM at 16 kHz —
-//! whisper's native rate, so no resampling needed. Exposes a smoothed RMS level (0..1)
+//! the STT engine's native rate (16 kHz), so no resampling needed. Exposes a smoothed RMS level (0..1)
 //! for optional external listeners/visualizers.
 //!
 //! Why parec and not cpal/ALSA: this box is PipeWire, the default ALSA device fails
@@ -62,16 +62,20 @@ pub fn start() -> Result<Capture, String> {
         while run.load(Ordering::Relaxed) {
             match stdout.read(&mut raw) {
                 Ok(0) => {
-                    // EOF: parec closed stdout, i.e. the capture stream ended on its own
-                    // (mic source removed/suspended, parec exited). The session is still
-                    // "listening" but NO further audio will be captured from here on — a
-                    // silent mid-dictation cutoff. This is the smoking gun if it appears.
-                    eprintln!(
-                        "voicechat: capture: parec EOF after {:.1}s ({} samples) — stream ended, \
-                         capturing stops (session still listening!)",
-                        started.elapsed().as_secs_f32(),
-                        total
-                    );
+                    // EOF: parec closed stdout. If `run` is still true, the stream ended on its
+                    // own (mic source removed/suspended, parec exited) mid-dictation while the
+                    // session is still "listening" — the real smoking gun, so shout about it.
+                    // If `run` is already false, this EOF is just our own finish()->kill() closing
+                    // the pipe on a normal stop — expected, so stay quiet (it was firing on every
+                    // single stop and crying wolf).
+                    if run.load(Ordering::Relaxed) {
+                        eprintln!(
+                            "voicechat: capture: parec EOF after {:.1}s ({} samples) — stream ended \
+                             UNEXPECTEDLY mid-dictation, capturing stops (session still listening!)",
+                            started.elapsed().as_secs_f32(),
+                            total
+                        );
+                    }
                     break;
                 }
                 Ok(n) => {

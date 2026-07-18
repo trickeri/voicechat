@@ -1,7 +1,7 @@
 [Unit]
-Description=voicechat — headless dictation daemon (mic -> whispermodel -> paste)
-After=graphical-session.target whispermodel.service
-Wants=whispermodel.service
+Description=voicechat — headless dictation daemon (mic -> NulSpeech2Text -> paste)
+After=graphical-session.target NulSpeech2Text.service
+Wants=NulSpeech2Text.service
 
 [Service]
 Type=simple

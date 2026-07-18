@@ -2,7 +2,8 @@
 
 Headless **speech-to-text dictation** daemon for Linux. No window. Press your bound shortcut,
 speak, press again — your words get transcribed and pasted into the focused window. STT is
-served by the [`whispermodel`](https://github.com/trickeri/whispermodel) daemon.
+served by the [`NulSpeech2Text`](https://github.com/trickeri/NulSpeech2Text) daemon
+(engine-swappable; currently the Parakeet TDT 0.6B backend).
 
 (The name is legacy — there's no chat/LLM/TTS, just dictation.)
 
@@ -11,7 +12,7 @@ served by the [`whispermodel`](https://github.com/trickeri/whispermodel) daemon.
 ```
 shortcut ── voicechat toggle ──▶ voicechat daemon
    capture mic (parec, 16 kHz mono)
-   on stop: POST wav ──▶ whispermodel /inference ──▶ transcript
+   on stop: POST wav ──▶ NulSpeech2Text /inference ──▶ transcript
             broadcast transcript on the Unix socket (every transcript, always)
             then per-app routing (rules.conf), by focused app:
               paste     -> wl-copy (persistent) + synthesize combo  (default)
@@ -59,11 +60,11 @@ built-in defaults.
 > tool — don't assume. Use the marked default if the user has no preference.**
 
 1. **Install the STT server first.** voicechat is just the client; it needs
-   [`whispermodel`](https://github.com/trickeri/whispermodel) running. Follow that repo's
-   "Install with Claude Code" section — it handles the GPU/CPU choice and the Whisper model
+   [`NulSpeech2Text`](https://github.com/trickeri/NulSpeech2Text) running. Follow that repo's
+   "Install with Claude Code" section — it handles the GPU/CPU choice and the STT model
    download. Confirm it's up before continuing:
    ```bash
-   curl -fsS http://127.0.0.1:48450/ >/dev/null && echo "whispermodel is up"
+   curl -fsS http://127.0.0.1:48450/ >/dev/null && echo "NulSpeech2Text is up"
    ```
 
 2. **Install runtime dependencies** (names vary by distro):
@@ -159,7 +160,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now voicechat
 ```
 
-Requires: `whispermodel` running, `parec` (pipewire-pulse), `wl-copy` (wl-clipboard), and
+Requires: `NulSpeech2Text` running, `parec` (pipewire-pulse), `wl-copy` (wl-clipboard), and
 `ydotool` (+ `ydotoold`).
 
 ### Global shortcut on KDE
@@ -185,7 +186,8 @@ On non-KDE desktops, just bind `voicechat toggle` to a key in your DE's keyboard
 
 - `VOICECHAT_SOURCE` — PipeWire/PulseAudio source to record from (`pactl list sources short`).
   Unset = system default source.
-- `WHISPER_HTTP_URL` — whispermodel endpoint (default `http://127.0.0.1:48450/inference`).
+- `WHISPER_HTTP_URL` — NulSpeech2Text endpoint (default `http://127.0.0.1:48450/inference`).
+  (Legacy env-var name — kept because the whole stack shares it; the engine is Parakeet now.)
 - `YDOTOOL_SOCKET` — default `$XDG_RUNTIME_DIR/.ydotool_socket`.
 - `VOICECHAT_PASTE_KEY` — default paste combo (default `ctrl+v`). Written like `ctrl+v` /
   `ctrl+shift+v` / `shift+insert` (modifiers: ctrl, shift, alt, super; plus a–z or insert).
