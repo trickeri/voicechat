@@ -289,7 +289,34 @@ fn stop_and_process(mut s: Session, bus: &bus::Bus, stop_at: Instant) {
         clock::stamp(),
         audio_secs
     );
-    match stt::transcribe(&samples, sample_rate) {
+    // Run the STT request on a worker thread guarded by a hard watchdog. A stalled/wedged server
+    // must never hang the daemon — previously a server that accepted the POST then stalled left
+    // voicechat blocked forever (ureq's response read outlived its timeout, and even killing the
+    // server didn't wake it), so dictation stayed dead until a manual restart. If the watchdog
+    // fires we abandon the turn and settle to idle; the worker unwinds on its own once the HTTP
+    // deadline (see stt::http_timeout) trips.
+    let watchdog = stt::watchdog();
+    let samples = Arc::new(samples);
+    let (rtx, rrx) = mpsc::channel();
+    let sw = samples.clone();
+    let sr = sample_rate;
+    thread::spawn(move || {
+        let _ = rtx.send(stt::transcribe(&sw, sr));
+    });
+    let outcome = match rrx.recv_timeout(watchdog) {
+        Ok(r) => r,
+        Err(_) => {
+            eprintln!(
+                "voicechat: [{}] transcribe WATCHDOG — no response from NulSpeech2Text within {}s; \
+                 abandoning turn (daemon stays responsive)",
+                clock::stamp(),
+                watchdog.as_secs()
+            );
+            flash_error();
+            return;
+        }
+    };
+    match outcome {
         Ok(raw) => {
             eprintln!(
                 "voicechat: [{}] transcribe DONE in {}ms",
